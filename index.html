@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DotFX Builder - auto dot-particle music video</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="src/style.css">
+</head>
+<body>
+<header><b>DotFX Builder</b> <span class="sub">upload a clip + a song -> beat-locked 3D dot-particle edit, rendered in your browser</span></header>
+<main>
+  <section id="panel">
+    <fieldset><legend>1 · Inputs</legend>
+      <label>Video <input type="file" id="fVideo" accept="video/*,.mov,.mp4"></label>
+      <label>Song <input type="file" id="fAudio" accept="audio/*,.mp3,.wav,.m4a"></label>
+      <label class="row"><input type="checkbox" id="keepAudio"> keep the video's own audio (no song)</label>
+      <label>Analysis quality <select id="quality"><option value="fast">fast (depth every 2nd frame)</option><option value="best">best (every frame)</option></select></label>
+      <button id="bAnalyze" class="primary">Analyse &amp; auto-edit</button>
+    </fieldset>
+    <fieldset><legend>2 · Song section</legend>
+      <canvas id="wave" width="600" height="90"></canvas>
+      <label>Start <input type="range" id="start" min="0" max="1" step="0.001" value="0"> <span id="startTxt">-</span></label>
+      <label class="row"><input type="checkbox" id="snapBar" checked> snap to bars</label>
+      <button id="bAuto">Auto-pick punchiest</button>
+      <div id="audioInfo" class="info"></div>
+    </fieldset>
+    <fieldset><legend>3 · Style</legend>
+      <label>Seed <input type="number" id="seed" value="1" min="1" style="width:6em"> <button id="bReroll">Reroll</button></label>
+      <label>Punch / intensity <input type="range" id="intensity" min="0.4" max="1.6" step="0.05" value="1"> <span id="intTxt">1.00</span></label>
+      <label>Strobe amount <input type="range" id="strobe" min="0" max="1" step="0.05" value="0.7"> <span id="strTxt">0.70</span></label>
+      <label>Palette <select id="palette"><option value="reference">reference (red / cream / gold / blue)</option><option value="hot">hot</option><option value="cool">cool</option><option value="mono">mono</option></select></label>
+    </fieldset>
+    <fieldset><legend>4 · Output</legend>
+      <label>Aspect <select id="aspect"><option value="source">source</option><option value="9:16">9:16 (TikTok/Reels crop)</option><option value="1:1">1:1</option><option value="16:9">16:9</option></select></label>
+      <label>Size <select id="size"><option value="720">720p</option><option value="1080" selected>1080p</option><option value="540">540p (fast)</option></select></label>
+      <label>Quality <select id="bitrate"><option value="0.14">high</option><option value="0.08">medium</option><option value="0.045">small file</option></select></label>
+      <label>FPS <select id="fps"><option value="30">30</option><option value="60" selected>60</option></select></label>
+      <button id="bExport" class="primary">Render &amp; export MP4</button>
+      <a id="dl" class="dl" style="display:none">Download</a>
+    </fieldset>
+  </section>
+  <section id="stage">
+    <canvas id="view"></canvas>
+    <div class="transport"><button id="bPlay">▶ Play</button><input type="range" id="scrub" min="0" max="1" step="0.001" value="0"><span id="time">0.00s</span></div>
+    <div id="prog"><div id="bar"></div><span id="progTxt">idle</span></div>
+    <pre id="log"></pre>
+    <details><summary>Edit plan</summary><pre id="planTxt"></pre></details>
+  </section>
+</main>
+<script type="module" src="src/app.js"></script>
+</body>
+</html>

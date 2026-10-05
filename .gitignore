@@ -1,0 +1,8 @@
+.DS_Store
+node_modules/
+*.mp4
+*.mov
+*.mp3
+*.wav
+*.m4a
+test/e2e_run.log
