@@ -1,5 +1,6 @@
 // WebGL2 point-cloud renderer: port of clip2_dots_v2 (c3.html) driven by a plan from planner.js.
 import { VS, FS, QV, BRIGHT, BLUR, COMP } from './shaders.js';
+import { effectAt } from './planner.js';
 import { clamp, easeOut, easeIO, hex, hsh } from './util.js';
 
 export const LOOKS = {
@@ -62,7 +63,7 @@ export class DotRenderer {
   setData(video, plan, fps) {
     this.V = video; this.plan = plan; this.fps = fps; this.lr.fill(-1); this.ld.fill(-1);
     const ef = t => Math.max(0, Math.floor(t * fps + 1e-6)), SF = fps / 30;
-    this.ev = plan.sched.map(e => ({f: ef(e.t) + Math.round(e.strobe * SF), look: e.look, pitch: e.pitch})).sort((a, b) => a.f - b.f);
+    this.ev = plan.sched.map(e => ({f: ef(e.t) + Math.round((e.strobe || 0) * SF), look: e.look, pitch: e.pitch, strobe: !!e.burst})).sort((a, b) => a.f - b.f);
     this.beatF = plan.beats.map(ef); this.barF = plan.barStarts.map(ef);
     this.flash = plan.flashes.map(x => ({f: ef(x.t), c: hex(x.c), s: Math.min(1, x.s)}));
     this.detF = plan.dets.map(ef); this.echoF = plan.echoHits.map(ef);
@@ -89,28 +90,28 @@ export class DotRenderer {
     const u = (p[0] - c[0]) / c[2], v = (p[1] - c[1]) / c[3], d = D0 * (2.4 - 1.8 * p[2]); return [(u * 2 - 1) * asp * d / D0, (1 - v * 2) * d / D0, -d]; }
   lastIdx(arr, n) { let k = -1; for (let i = 0; i < arr.length; i++) if (arr[i] <= n) k = i; return k; }
   camAt(nf) {
-    const n = nf, fps = this.fps, I = this.plan.intensity, t = n / fps;
+    const n = nf, fps = this.fps, I = this.plan.intensity, t = n / fps, g = effectAt(this.plan.fx, t);
     const held = this.holds.find(h => n >= h.f0 && n < h.f1);
     const kb = this.lastIdx(this.beatF, n + 1e-6), ka = kb >= 0 ? (n - this.beatF[kb]) / fps : 9;
     const isBar = this.barF.includes(kb >= 0 ? this.beatF[kb] : -1);
     const kstr = kb >= 0 ? clamp(.45 + (this.plan.kick[kb] || .6), .5, 1.2) : 1;
-    const k = held ? 0 : elastic(ka) * (isBar ? 1.5 : 1) * I * kstr, sgn = kb % 2 ? 1 : -1;
+    const k = held ? 0 : elastic(ka) * (isBar ? 1.5 : 1) * I * g * kstr, sgn = kb % 2 ? 1 : -1;
     const bi = Math.max(0, this.lastIdx(this.barF, n + 1e-6)), ba = this.barF.length ? (n - this.barF[bi]) / fps : 0;
     const bc = this.barCam[bi] || {yaw: 0, roll: 0, pitch: 0}, pc = bi > 0 ? this.barCam[bi - 1] : {yaw: 0, roll: 0, pitch: 0}, s = snap(ba);
-    let yaw = (pc.yaw + (bc.yaw - pc.yaw) * s) * DEG + 6 * DEG * Math.sin(2 * Math.PI * t / 5.7) + sgn * 5 * DEG * k;
-    let pit = (pc.pitch + (bc.pitch - pc.pitch) * s) * DEG + 2.5 * DEG * Math.sin(2 * Math.PI * t / 4.3 + 1) + 1.5 * DEG * k * (kb % 3 ? 1 : -1);
-    let roll = (pc.roll + (bc.roll - pc.roll) * s) * DEG + sgn * 2 * DEG * k;
-    let dolly = 1 - .2 * k + .05 * Math.sin(2 * Math.PI * t / 6.3);
-    let fov = FOV0 * (1 - .08 * k - (isBar ? .1 * I * elastic(ka, .09, .3) : 0));
+    let yaw = (pc.yaw + (bc.yaw - pc.yaw) * s) * g * DEG + 6 * DEG * g * Math.sin(2 * Math.PI * t / 5.7) + sgn * 5 * DEG * k;
+    let pit = (pc.pitch + (bc.pitch - pc.pitch) * s) * g * DEG + 2.5 * DEG * g * Math.sin(2 * Math.PI * t / 4.3 + 1) + 1.5 * DEG * k * (kb % 3 ? 1 : -1);
+    let roll = (pc.roll + (bc.roll - pc.roll) * s) * g * DEG + sgn * 2 * DEG * k;
+    let dolly = 1 - .2 * k + .05 * g * Math.sin(2 * Math.PI * t / 6.3);
+    let fov = FOV0 * (1 - .08 * k - (isBar ? .1 * I * g * elastic(ka, .09, .3) : 0));
     const lat = [sgn * .05 * k, 0, 0];
-    for (const sw of this.swings) { const a = (n - sw.f) / fps; if (a >= 0) yaw += sw.deg * DEG * Math.exp(-a / sw.tau) * Math.cos(2 * Math.PI * a / sw.per); }
-    if (this.swings.length && this.swings[0].f === 0) { const a0 = n / fps; dolly += .5 * I * Math.exp(-a0 / .15); }
-    for (const d of this.detF) { const a = (n - d) / fps; if (a >= 0 && a < 1) dolly += .35 * I * Math.exp(-a / .12); }
-    if (this.fly && n >= this.fly.f0 && n < this.fly.f1) { const u = (n - this.fly.f0) / (this.fly.f1 - this.fly.f0); dolly *= 1 - .9 * Math.pow(u, 1.6); }
-    if (this.reform && n >= this.reform.f0 && n < this.reform.f1) { const u = (n - this.reform.f0) / (this.reform.f1 - this.reform.f0); yaw += 22 * DEG * Math.sin(Math.PI * u); }
-    if (held) { const u = (n - held.f0) / (held.f1 - held.f0); dolly *= 1 - .14 * easeIO(u); }
+    for (const sw of this.swings) { const a = (n - sw.f) / fps; if (a >= 0) yaw += sw.deg * g * DEG * Math.exp(-a / sw.tau) * Math.cos(2 * Math.PI * a / sw.per); }
+    if (this.swings.length && this.swings[0].f === 0) { const a0 = n / fps; dolly += .5 * I * g * Math.exp(-a0 / .15); }
+    for (const d of this.detF) { const a = (n - d) / fps; if (a >= 0 && a < 1) dolly += .35 * I * g * Math.exp(-a / .12); }
+    if (this.fly && n >= this.fly.f0 && n < this.fly.f1) { const u = (n - this.fly.f0) / (this.fly.f1 - this.fly.f0); dolly *= 1 - .9 * g * Math.pow(u, 1.6); }
+    if (this.reform && n >= this.reform.f0 && n < this.reform.f1) { const u = (n - this.reform.f0) / (this.reform.f1 - this.reform.f0); yaw += 22 * DEG * g * Math.sin(Math.PI * u); }
+    if (held) { const u = (n - held.f0) / (held.f1 - held.f0); dolly *= 1 - .14 * g * easeIO(u); }
     const piv = this.pivAt(n), fz = this.fz;
-    if (fz && n >= fz.f0 && n < fz.f1) { const u = Math.sin(Math.PI * easeIO((n - fz.f0) / (fz.f1 - fz.f0))); yaw += fz.deg * DEG * u; pit += fz.lift * DEG * u; dolly *= 1 - .15 * u; }
+    if (fz && n >= fz.f0 && n < fz.f1) { const u = Math.sin(Math.PI * easeIO((n - fz.f0) / (fz.f1 - fz.f0))); yaw += fz.deg * DEG * u * g; pit += fz.lift * DEG * u * g; dolly *= 1 - .15 * u * g; }
     const rot = v => rotY(rotX(v, pit), yaw);
     const eye = add(add(piv, scl(rot(scl(piv, -1)), dolly)), rot(lat));
     const fw = rot([0, 0, -1]), up = rotAxis(rot([0, 1, 0]), fw, roll);
@@ -130,31 +131,37 @@ export class DotRenderer {
 
   async renderAt(t) {
     const gl = this.gl, fps = this.fps, W = this.W, H = this.H, V = this.V, I = this.plan.intensity;
-    const n = Math.round(t * fps), SF = this.SF;
-    let ev = this.ev[0] || {look: 'led', pitch: 14}; for (const e of this.ev) if (e.f <= n) ev = e;
+    const n = Math.round(t * fps), SF = this.SF, g = effectAt(this.plan.fx, n / fps), quiet = g < 0.2;
+    let ev = this.ev[0] || {look: 'led', pitch: 14, strobe: false};
+    for (const e of this.ev) if (e.f <= n && !(quiet && e.strobe)) ev = e;
+    if (quiet && ev.strobe) {
+      let heldLook = null; for (const e of this.ev) if (e.f <= n && !e.strobe) heldLook = e;
+      ev = heldLook || {look: 'led', pitch: ev.pitch || 14, strobe: false};
+    }
     const L = LOOKS[ev.look] || LOOKS.led, fi = this.footageF(n);
     const lastAge = arr => { let a = 99; for (const f of arr) if (f <= n) a = (n - f) / fps; return a; };
     const held = this.holds.some(h => n >= h.f0 && n < h.f1);
     const cam = this.camAt(n);
     const ka = cam.kb >= 0 ? (n - this.beatF[cam.kb]) / fps : 9;
-    const kick = held ? 0 : Math.exp(-ka / .05) * Math.min(1.3, I);
+    const kick = held ? 0 : Math.exp(-ka / .05) * Math.min(1.3, I) * g;
     const swell = 1 + (cam.isBar ? .5 : .3) * kick;
-    const echoAge = lastAge(this.echoF), echoHit = echoAge < .35 ? Math.exp(-echoAge / .12) : 0;
+    const echoAge = lastAge(this.echoF), echoHit = (echoAge < .35 ? Math.exp(-echoAge / .12) : 0) * g;
     const detAge = lastAge(this.detF);
     let det = detAge < .5 ? 1 - Math.exp(-detAge * 6) : 0, detFade = detAge < .5 ? 1 - clamp((detAge - .2) / .2) : 1;
     const rf = this.reform;
     if (rf && n >= rf.f0 && n < rf.f1) { det = n < rf.fm ? easeOut((n - rf.f0) / Math.max(1, rf.fm - rf.f0)) * .95 : .95 * (1 - easeIO((n - rf.fm) / Math.max(1, rf.f1 - rf.fm))); detFade = 1; }
+    det *= g;
     const fz = this.fz && n >= this.fz.f0 && n < this.fz.f1;
     let fl = null; for (const x of this.flash) if (n === x.f) fl = {c: x.c, s: x.s}; else if (n > x.f && n <= x.f + SF && !fl) fl = {c: x.c, s: x.s * .25};
     const echoLook = !!L.echo, echoN = echoLook ? 4 : (echoHit > 0 ? 3 : 0);
     await this.load(0, fi); for (let k = 1; k <= echoN; k++) await this.load(k, fi - 2 * k);
     const scale = Math.min(W, H) / 1080, pitch = Math.max(3, (ev.pitch || 12) * scale), cols = Math.ceil(W / pitch), rows = Math.ceil(H / pitch), N = cols * rows;
     const pd = V.piv[Math.min(V.piv.length - 1, Math.floor(fi / V.step))][2], area = V.area[Math.min(V.area.length - 1, Math.floor(fi / V.step))];
-    const wave = [ka * D0 * 2.6, 0, held || ka > .4 ? 0 : (cam.isBar ? 1 : .7) * Math.exp(-ka / .14) * Math.min(1.3, I)];
+    const wave = [ka * D0 * 2.6, 0, held || ka > .4 ? 0 : (cam.isBar ? 1 : .7) * Math.exp(-ka / .14) * Math.min(1.3, I) * g];
     const spd = this.speed(this.camAt(n - 1), cam), trails = spd > 6 ? (spd > 25 ? 3 : 2) : 0;
-    const crop = this.crop(fi), lod = Math.max(0, Math.log2(pitch * V.w * crop[2] / W) - .2);
+    const crop = this.crop(fi), lod = Math.max(0, Math.log2(pitch * V.w * crop[2] / W) - .2), fx = g < 0.01 ? 0 : g;
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fDots); gl.viewport(0, 0, W, H); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
-    if (!L.mode) {
+    if (fx > 0 && !L.mode) {
       const P = this.PD, U = P.U; gl.useProgram(P.p); gl.enable(gl.BLEND);
       gl.uniform1i(U('uR'), 0); gl.uniform1i(U('uD'), 1);
       const bind = k => { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.tRaw[k]); gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.tD[k]); };
@@ -201,12 +208,12 @@ export class DotRenderer {
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.tRaw[0]); gl.uniform1i(C.U('uR'), 1);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.tA); gl.uniform1i(C.U('uBl'), 2);
     const bgc = hex(L.bg || '#000000'), bgl = .299 * bgc[0] + .587 * bgc[1] + .114 * bgc[2];
-    const recoil = detAge < .3 ? Math.exp(-detAge / .06) : 0, shk = ((cam.isBar ? 10 : 5) * kick + 26 * recoil * I) * W / 1440, kbs = cam.kb * 7 + (detAge < .3 ? Math.round(detAge * fps) : 0);
-    gl.uniform3fv(C.U('uBg'), bgc); gl.uniform1f(C.U('uMode'), L.mode || 0); gl.uniform4fv(C.U('uCrop'), crop); gl.uniform2f(C.U('uRes'), W, H);
+    const recoil = detAge < .3 ? Math.exp(-detAge / .06) : 0, shk = ((cam.isBar ? 10 : 5) * kick + 26 * recoil * I * g) * W / 1440, kbs = cam.kb * 7 + (detAge < .3 ? Math.round(detAge * fps) : 0);
+    gl.uniform3fv(C.U('uBg'), bgc); gl.uniform1f(C.U('uMode'), L.mode || 0); gl.uniform1f(C.U('uFx'), fx); gl.uniform4fv(C.U('uCrop'), crop); gl.uniform2f(C.U('uRes'), W, H);
     gl.uniform2f(C.U('uShake'), shk * (hsh(kbs * 3.1) - .5) * 2 / W, shk * (hsh(kbs * 5.7) - .5) * 2 / H);
-    gl.uniform1f(C.U('uCA'), ((cam.isBar ? 22 : 12) * kick + 14 * recoil + Math.min(10, spd * .25)) * W / 1440); gl.uniform1f(C.U('uCon'), 1 + (L.full ? .2 : .35) * kick);
+    gl.uniform1f(C.U('uCA'), ((cam.isBar ? 22 : 12) * kick + (14 * recoil + Math.min(10, spd * .25)) * g) * W / 1440); gl.uniform1f(C.U('uCon'), 1 + (L.full ? .2 : .35) * kick);
     gl.uniform1f(C.U('uBloom'), (bgl > .4 ? .2 : L.full ? .35 : .6) * (1 + .6 * kick));
-    gl.uniform1f(C.U('uFlash'), fl ? fl.s : 0); gl.uniform3fv(C.U('uFlashCol'), fl ? fl.c : [1, 1, 1]);
+    gl.uniform1f(C.U('uFlash'), fl ? fl.s * g : 0); gl.uniform3fv(C.U('uFlashCol'), fl ? fl.c : [1, 1, 1]);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     return {n, fi, look: ev.look, kick: +kick.toFixed(2), det: +det.toFixed(2), spd: +spd.toFixed(1), freeze: !!fz, held};
   }

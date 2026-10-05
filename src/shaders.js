@@ -70,11 +70,14 @@ void main(){ vec3 s=vec3(0); float w[5]=float[](.227,.194,.121,.054,.016);
   s+=texture(uT,v).rgb*w[0]; for(int i=1;i<5;i++){ s+=texture(uT,v+uDir*float(i)).rgb*w[i]; s+=texture(uT,v-uDir*float(i)).rgb*w[i]; } o=vec4(s,1.); }`;
 export const COMP = `#version 300 es
 precision highp float;
-in vec2 v; uniform sampler2D uDots, uR, uBl; uniform vec3 uBg, uFlashCol; uniform vec4 uCrop; uniform float uMode, uFlash, uCA, uCon, uBloom; uniform vec2 uShake, uRes; out vec4 o;
-vec3 look(vec2 q){ if(uMode>.5) return texture(uR,uCrop.xy+vec2(q.x,1.-q.y)*uCrop.zw).rgb; vec4 d=texture(uDots,q); return uBg*(1.-d.a)+d.rgb; }
+in vec2 v; uniform sampler2D uDots, uR, uBl; uniform vec3 uBg, uFlashCol; uniform vec4 uCrop; uniform float uMode, uFlash, uCA, uCon, uBloom, uFx; uniform vec2 uShake, uRes; out vec4 o;
+vec3 rawAt(vec2 q){ return texture(uR,uCrop.xy+vec2(q.x,1.-q.y)*uCrop.zw).rgb; }
+vec3 look(vec2 q){ if(uMode>.5) return rawAt(q); vec4 d=texture(uDots,q); return uBg*(1.-d.a)+d.rgb; }
 void main(){ vec2 q=v+uShake; vec2 c=q-.5; vec2 ca=c*uCA/uRes.x*2.;
   vec3 col=vec3(look(q+ca).r, look(q).g, look(q-ca).b);
   if(uMode<.5) col+=texture(uBl,q).rgb*uBloom;
   col=clamp((col-.5)*uCon+.5,0.,1.);
   float vg=1.-dot(c,c)*.5; col*=vg;
-  col=mix(col,uFlashCol,uFlash); o=vec4(col,1.); }`;
+  col=mix(col,uFlashCol,uFlash);
+  col=mix(rawAt(v), col, uFx);
+  o=vec4(col,1.); }`;

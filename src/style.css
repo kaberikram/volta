@@ -385,7 +385,18 @@ button.accent {
 }
 button.accent:not(:disabled):hover { background: oklch(0.88 0 0); }
 #bAnalyze { width: 100%; margin-top: auto; }
-#bExport, #bPlay { width: auto; }
+#bExport, #bPlay, #bFxReset { width: auto; }
+#bFxReset { flex: none; }
+#fxHint {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body[data-ready] #beats { cursor: crosshair; }
 
 .dl {
   color: var(--ink);

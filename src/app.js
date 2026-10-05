@@ -1,12 +1,12 @@
 import {decodeAudioFile, analyzeAudio, pickSection, gridFor, renderSection} from './audio.js';
 import {analyzeVideo} from './video.js';
-import {makePlan, describePlan} from './planner.js';
+import {makePlan, describePlan, effectAt} from './planner.js';
 import {DotRenderer} from './renderer.js';
 import {exportMp4, exportWebm} from './exporter.js';
 import {clamp} from './util.js';
 
 const $ = id => document.getElementById(id);
-const S = {videoFile: null, audioFile: null, video: null, songBuf: null, A: null, start: 0, mix: null, grid: null, plan: null, playing: false, busy: false, lastExport: null};
+const S = {videoFile: null, audioFile: null, video: null, songBuf: null, A: null, start: 0, mix: null, grid: null, plan: null, playing: false, busy: false, lastExport: null, fx: null, fxSel: -1, fxDrag: null};
 window.dotfx = S;
 const logEl = $('log');
 function logKind(m) {
@@ -48,7 +48,8 @@ function previewSize() { const [W, H] = outSize(+$('size').value); const k = Mat
 function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 function laneSize(c) {
   const dpr = devicePixelRatio || 1, cssW = c.clientWidth || 600, cssH = c.clientHeight || 48;
-  c.width = Math.max(1, Math.round(cssW * dpr)); c.height = Math.max(1, Math.round(cssH * dpr));
+  const w = Math.max(1, Math.round(cssW * dpr)), h = Math.max(1, Math.round(cssH * dpr));
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
   c.parentElement.style.setProperty('--lane-h', cssH + 'px');
   return {g: c.getContext('2d'), dpr, W: c.width, H: c.height};
 }
@@ -90,12 +91,88 @@ function drawBeats() {
     g.beginPath(); g.moveTo(px, y - r); g.lineTo(px + r * .7, y); g.lineTo(px, y + r); g.lineTo(px - r * .7, y); g.closePath(); g.fill();
     g.fillStyle = mute;
   }
+  if (S.fx && S.fx.length) {
+    const top = 18 * dpr, bot = H - 14 * dpr, span = Math.max(1, bot - top);
+    const yOf = v => bot - clamp(v) * span;
+    g.beginPath(); g.strokeStyle = accent; g.globalAlpha = 0.9; g.lineWidth = Math.max(1.5, 1.5 * dpr);
+    const steps = Math.max(2, Math.ceil(W / (2 * dpr)));
+    for (let i = 0; i <= steps; i++) {
+      const px = i / steps * W, py = yOf(effectAt(S.fx, dur * i / steps));
+      if (i) g.lineTo(px, py); else g.moveTo(px, py);
+    }
+    g.stroke(); g.globalAlpha = 1;
+    const s = 3.5 * dpr;
+    S.fx.forEach((k, i) => {
+      const px = k.t / dur * W, py = yOf(k.v);
+      g.fillStyle = i === S.fxSel ? accent : cssVar('--lane'); g.strokeStyle = accent; g.lineWidth = Math.max(1, dpr);
+      g.beginPath(); g.rect(px - s, py - s, s * 2, s * 2); g.fill(); g.stroke();
+    });
+    if (S.fxDrag && S.fxSel >= 0 && S.fx[S.fxSel]) {
+      const k = S.fx[S.fxSel], px = k.t / dur * W, py = yOf(k.v);
+      g.font = `650 ${11 * dpr}px ${cssVar('--font-ui')}`; g.fillStyle = accent; g.textBaseline = 'bottom';
+      g.fillText(Math.round(k.v * 100) + '%', Math.min(W - 28 * dpr, px + 6 * dpr), Math.max(12 * dpr, py - 2 * dpr));
+    }
+  }
   if (document.body.dataset.ready) {
     const px = +$('scrub').value * W;
     g.strokeStyle = accent; g.lineWidth = Math.max(1, dpr); g.setLineDash([3 * dpr, 3 * dpr]);
     g.beginPath(); g.moveTo(px, 6 * dpr); g.lineTo(px, H); g.stroke(); g.setLineDash([]);
     g.fillStyle = accent; g.fillRect(px - 3.5 * dpr, 0, 7 * dpr, 5 * dpr);
   }
+}
+function fxBox(c) {
+  const H = c.clientHeight || 48, top = 18, bot = Math.max(top + 8, H - 14);
+  return {W: c.clientWidth || 600, H, top, bot};
+}
+function fxPoint(c, e) {
+  const r = c.getBoundingClientRect();
+  return {x: e.clientX - r.left, y: e.clientY - r.top, ...fxBox(c)};
+}
+function fxHit(c, x, y) {
+  if (!S.fx || !S.video) return -1;
+  const box = fxBox(c), dur = S.video.dur || .001, span = box.bot - box.top;
+  let best = -1, bd = 10;
+  S.fx.forEach((k, i) => {
+    const d = Math.hypot(k.t / dur * box.W - x, box.bot - clamp(k.v) * span - y);
+    if (d < bd) { bd = d; best = i; }
+  });
+  return best;
+}
+function bindFx(plan) {
+  const dur = Math.max(0.001, plan.dur || 0);
+  if (!S.fx || S.fx.length < 2) S.fx = [{t: 0, v: 1}, {t: dur, v: 1}];
+  const src = S.fx, startV = clamp(src[0].v), endV = clamp(src[src.length - 1].v);
+  const pad = Math.min(0.02, dur / 8);
+  const mid = src.slice(1, -1).map(k => ({t: k.t, v: clamp(k.v)})).sort((a, b) => a.t - b.t);
+  const kept = [];
+  for (const k of mid) {
+    const lo = (kept.length ? kept[kept.length - 1].t : 0) + pad;
+    k.t = clamp(k.t, lo, dur - pad);
+    if (k.t >= dur - pad * .5) continue;
+    if (kept.length && k.t < kept[kept.length - 1].t + pad * .5) continue;
+    kept.push(k);
+  }
+  S.fx = [{t: 0, v: startV}, ...kept, {t: dur, v: endV}];
+  plan.fx = S.fx.map(k => ({t: k.t, v: k.v}));
+  if (S.fxSel >= S.fx.length) S.fxSel = -1;
+}
+function applyFx(seek) {
+  if (!S.plan || !S.fx) return;
+  S.plan.fx = S.fx.map(k => ({t: k.t, v: k.v}));
+  $('planTxt').textContent = describePlan(S.plan);
+  if (S.video) {
+    const t = seek && S.fxDrag ? S.fxDrag.t : +$('scrub').value * S.video.dur;
+    if (seek && S.fxDrag) $('scrub').value = clamp(t / S.video.dur);
+    drawFrame(clamp(t, 0, S.video.dur));
+  }
+  drawBeats();
+}
+function resetFx() {
+  if (!S.video) return;
+  const dur = Math.max(0.001, S.video.dur);
+  S.fx = [{t: 0, v: 1}, {t: dur, v: 1}];
+  S.fxSel = -1; S.fxDrag = null;
+  if (S.plan) applyFx(false); else drawBeats();
 }
 function snapStart(t) {
   if (!$('snapBar').checked || !S.A || S.keep) return t;
@@ -131,6 +208,7 @@ function replan() {
   if (S.video) $('durTxt').textContent = S.video.dur.toFixed(2) + 's';
   if (!S.video || !S.grid) return;
   S.plan = makePlan(S.grid, S.video.dur, S.video, opts());
+  bindFx(S.plan);
   document.body.dataset.ready = '1';
   $('planTxt').textContent = describePlan(S.plan);
   const [W, H] = previewSize(); R.setSize(W, H); R.setData(S.video, S.plan, fps());
@@ -144,18 +222,26 @@ async function drawFrame(t) {
   if (pending != null) { const p = pending; pending = null; drawFrame(p); }
 }
 let actx = null, srcNode = null, t0 = 0, off = 0;
-function stop() { if (srcNode) { try { srcNode.stop(); } catch (e) {} srcNode = null; } S.playing = false; $('bPlay').textContent = '▶ Play'; }
+function stop() { if (srcNode) { try { srcNode.stop(); } catch (e) {} srcNode = null; } S.playing = false; $('bPlay').textContent = '▶ Play'; drawBeats(); }
 async function play() {
   if (!S.plan || !S.mix) return; if (S.playing) { stop(); return; }
   actx = actx || new AudioContext(); await actx.resume();
   off = +$('scrub').value * S.video.dur; if (off >= S.video.dur - .05) off = 0;
   srcNode = actx.createBufferSource(); srcNode.buffer = S.mix; srcNode.connect(actx.destination);
   t0 = actx.currentTime + .03; srcNode.start(t0, off); S.playing = true; $('bPlay').textContent = '❚❚ Pause';
-  const tick = async () => { if (!S.playing) return; const t = off + actx.currentTime - t0;
-    if (t >= S.video.dur) { stop(); return; }
+  const tick = () => {
+    if (!S.playing) return;
+    const t = off + actx.currentTime - t0;
+    if (t >= S.video.dur) { $('scrub').value = 1; $('time').textContent = S.video.dur.toFixed(2) + 's'; stop(); return; }
     $('scrub').value = Math.max(0, t) / S.video.dur;
-    if (!drawing) { drawing = true; try { await R.renderAt(Math.max(0, Math.floor(t * fps()) / fps())); } catch (e) {} drawing = false; $('time').textContent = t.toFixed(2) + 's'; }
-    requestAnimationFrame(tick); };
+    $('time').textContent = Math.max(0, t).toFixed(2) + 's';
+    drawBeats();
+    if (!drawing) {
+      drawing = true;
+      R.renderAt(Math.max(0, Math.floor(t * fps()) / fps())).catch(() => {}).then(() => { drawing = false; });
+    }
+    requestAnimationFrame(tick);
+  };
   requestAnimationFrame(tick);
 }
 
@@ -175,6 +261,7 @@ async function analyze() {
     S.A = await analyzeAudio(S.songBuf);
     $('audioInfo').textContent = `${S.A.bpm.toFixed(1)} BPM · ${S.A.bars.length} bars · ${S.A.bars.filter(b => b.drop).length} drop hits · strong kicks on 1/8 grid ${(S.A.kickOnGrid * 100).toFixed(0)}% · song ${S.A.duration.toFixed(1)}s`;
     log('audio: ' + $('audioInfo').textContent);
+    S.fx = null; S.fxSel = -1; S.fxDrag = null;
     await autoPick();
     $('scrub').value = 0; drawFrame(0);
     progress(1, `ready - ${((performance.now() - t0) / 1000).toFixed(1)}s total`);
@@ -200,7 +287,7 @@ async function doExport() {
   return res;
 }
 function setButtons() {
-  for (const id of ['bAnalyze', 'bExport', 'bAuto', 'bReroll', 'bPlay']) $(id).disabled = S.busy || (id !== 'bAnalyze' && !S.plan);
+  for (const id of ['bAnalyze', 'bExport', 'bAuto', 'bReroll', 'bPlay', 'bFxReset']) $(id).disabled = S.busy || (id !== 'bAnalyze' && !S.plan);
   $('bAnalyze').classList.toggle('accent', !S.plan);
   $('bExport').classList.toggle('accent', !!S.plan);
 }
@@ -223,6 +310,59 @@ $('bExport').onclick = () => doExport().catch(() => {});
 $('bAuto').onclick = () => autoPick();
 $('bReroll').onclick = () => { $('seed').value = (+$('seed').value || 1) + 1; replan(); };
 $('bPlay').onclick = play;
+$('bFxReset').onclick = resetFx;
+const beats = $('beats');
+beats.addEventListener('pointerdown', e => {
+  if (!S.fx || !S.plan || e.button !== 0) return;
+  const p = fxPoint(beats, e), i = fxHit(beats, p.x, p.y);
+  if (i < 0) return;
+  S.fxSel = i; S.fxDrag = S.fx[i];
+  beats.setPointerCapture(e.pointerId);
+  e.preventDefault();
+  drawBeats();
+});
+beats.addEventListener('pointermove', e => {
+  if (!S.fxDrag || !S.video) return;
+  const p = fxPoint(beats, e), dur = S.video.dur || .001, span = p.bot - p.top;
+  const key = S.fxDrag, idx = S.fx.indexOf(key);
+  if (idx < 0) return;
+  key.v = clamp((p.bot - p.y) / span);
+  if (idx > 0 && idx < S.fx.length - 1) {
+    const pad = Math.min(0.02, dur / 8);
+    const lo = S.fx[idx - 1].t + pad, hi = S.fx[idx + 1].t - pad;
+    key.t = clamp(p.x / p.W * dur, lo, Math.max(lo, hi));
+  }
+  applyFx(true);
+});
+function endFxDrag(e) {
+  if (!S.fxDrag) return;
+  S.fxDrag = null;
+  try { beats.releasePointerCapture(e.pointerId); } catch (err) {}
+  drawBeats();
+}
+beats.addEventListener('pointerup', endFxDrag);
+beats.addEventListener('pointercancel', endFxDrag);
+beats.addEventListener('dblclick', e => {
+  if (!S.fx || !S.plan || !S.video) return;
+  const p = fxPoint(beats, e);
+  if (fxHit(beats, p.x, p.y) >= 0) return;
+  const dur = S.video.dur || .001, pad = Math.min(0.05, dur * .05);
+  const t = clamp(p.x / p.W * dur, pad, dur - pad), key = {t, v: effectAt(S.fx, t)};
+  S.fx.splice(S.fx.length - 1, 0, key);
+  S.fx.sort((a, b) => a.t - b.t);
+  S.fxSel = S.fx.indexOf(key);
+  applyFx(false);
+});
+window.addEventListener('keydown', e => {
+  if (e.key !== 'Backspace' && e.key !== 'Delete') return;
+  const tag = document.activeElement && document.activeElement.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (!S.fx || S.fxSel <= 0 || S.fxSel >= S.fx.length - 1) return;
+  e.preventDefault();
+  S.fx.splice(S.fxSel, 1);
+  S.fxSel = -1;
+  applyFx(false);
+});
 $('start').oninput = () => { $('startTxt').textContent = (+$('start').value).toFixed(2) + 's'; S.start = +$('start').value; drawWave(); };
 $('start').onchange = () => S.A && !S.keep && setStart(+$('start').value + .010, 'manual');
 $('scrub').oninput = () => { if (S.playing) stop(); if (S.video) drawFrame(+$('scrub').value * S.video.dur); drawBeats(); };

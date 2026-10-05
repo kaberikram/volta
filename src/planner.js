@@ -32,9 +32,9 @@ export function makePlan(grid, dur, video, {seed = 1, intensity = 1, strobe = .7
   for (let i = 0; i < NBar; i++) if (!role[i]) { const r = R.pickNot(pool, last); role[i] = r; last = r; }
   // events
   const sched = [], flashes = [], dets = [], echoHits = [], holds = [], swings = [], barCam = [];
-  const add = (b, look, pitch, strobeStep = 0) => { const t = bt(b); if (t < dur) sched.push({t, look, pitch, strobe: strobeStep}); };
+  const add = (b, look, pitch, strobeStep = 0, burst = false) => { const t = bt(b); if (t < dur) sched.push({t, look, pitch, strobe: strobeStep, burst}); };
   const pick = cat => R.pick(pal[cat]); let prevLook = null; const pickN = cat => { const l = R.pickNot(pal[cat], prevLook); prevLook = l; return l; };
-  const strobes = (b, n) => { if (R() > strobe) return; for (let s = 0; s < n; s++) add(b, s % 2 ? pickN('flat') : 'raw', 12, s); };
+  const strobes = (b, n) => { if (R() > strobe) return; for (let s = 0; s < n; s++) add(b, s % 2 ? pickN('flat') : 'raw', 12, s, true); };
   const fl = (b, c, s) => flashes.push({t: bt(b), c, s: s * Math.min(1.2, .6 + .4 * intensity)});
   let freeze = null, reform = null, fly = null;
   for (let i = 0; i < NBar; i++) {
@@ -66,8 +66,23 @@ export function makePlan(grid, dur, video, {seed = 1, intensity = 1, strobe = .7
   return {seed, intensity, strobe, palette, dur, P, beats, kick: grid.kick, barStarts: barStarts.map(k => beats[k]), roles: role, sched, flashes, dets, echoHits, holds, freeze, reform, fly, swings, barCam};
 }
 
+/** 0–1 trim over the automatic edit. Missing keys read as full. Smoothstep between keys. */
+export function effectAt(keys, t) {
+  if (!keys || !keys.length) return 1;
+  if (t <= keys[0].t) return keys[0].v;
+  const last = keys[keys.length - 1];
+  if (t >= last.t) return last.v;
+  let i = 1;
+  while (i < keys.length - 1 && keys[i].t < t) i++;
+  const a = keys[i - 1], b = keys[i], span = b.t - a.t;
+  if (!(span > 1e-8)) return b.v;
+  const u = (t - a.t) / span, s = u * u * (3 - 2 * u);
+  return a.v + (b.v - a.v) * s;
+}
+
 export function describePlan(plan) {
   const lines = [`seed ${plan.seed} | ${plan.beats.length} beats, ${plan.barStarts.length} bars | roles: ${plan.roles.join(' ')}`];
-  for (const e of plan.sched) lines.push(`${e.t.toFixed(3)}s  ${e.look}${e.strobe ? ' (strobe)' : ''}  pitch ${e.pitch}`);
+  if (plan.fx && plan.fx.length) lines.push('fx ' + plan.fx.map(k => `${k.t.toFixed(2)}=${k.v.toFixed(2)}`).join(' '));
+  for (const e of plan.sched) lines.push(`${e.t.toFixed(3)}s  ${e.look}${e.burst ? ' (strobe)' : ''}  pitch ${e.pitch}`);
   return lines.join('\n');
 }
