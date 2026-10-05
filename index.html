@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Volta — beat-locked visual music editor</title>
 <meta name="description" content="Turn any clip and any song into a beat-locked visual edit in your browser. Depth, motion, and an MP4 export. Nothing is uploaded.">
-<meta name="theme-color" content="#0d0d10">
+<meta name="theme-color" content="#212121">
 <meta name="robots" content="index,follow">
 <link rel="canonical" href="https://volta.laughwithtic.com/">
 <meta property="og:type" content="website">
@@ -24,50 +24,162 @@
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400..700&family=Schibsted+Grotesk:wght@500..700&display=swap" rel="stylesheet" crossorigin="anonymous">
 <link rel="stylesheet" href="src/style.css">
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"WebApplication","name":"Volta","url":"https://volta.laughwithtic.com/","applicationCategory":"MultimediaApplication","operatingSystem":"Chrome","browserRequirements":"Requires desktop Chrome","description":"Turn any clip and any song into a beat-locked visual edit in the browser. Nothing is uploaded.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
 </head>
 <body>
-<header><h1>Volta</h1> <span class="sub">upload a clip + a song → beat-locked visual edit, rendered in your browser</span></header>
-<main>
-  <section id="panel">
-    <fieldset><legend>1 · Inputs</legend>
-      <label>Video <input type="file" id="fVideo" accept="video/*,.mov,.mp4"></label>
-      <label>Song <input type="file" id="fAudio" accept="audio/*,.mp3,.wav,.m4a"></label>
-      <label class="row"><input type="checkbox" id="keepAudio"> keep the video's own audio (no song)</label>
-      <label>Analysis quality <select id="quality"><option value="fast">fast (depth every 2nd frame)</option><option value="best">best (every frame)</option></select></label>
-      <button id="bAnalyze" class="primary">Analyse &amp; auto-edit</button>
-    </fieldset>
-    <fieldset><legend>2 · Song section</legend>
-      <canvas id="wave" width="600" height="90"></canvas>
-      <label>Start <input type="range" id="start" min="0" max="1" step="0.001" value="0"> <span id="startTxt">-</span></label>
-      <label class="row"><input type="checkbox" id="snapBar" checked> snap to bars</label>
-      <button id="bAuto">Auto-pick punchiest</button>
-      <div id="audioInfo" class="info"></div>
-    </fieldset>
-    <fieldset><legend>3 · Style</legend>
-      <label>Seed <input type="number" id="seed" value="1" min="1" style="width:6em"> <button id="bReroll">Reroll</button></label>
-      <label>Punch / intensity <input type="range" id="intensity" min="0.4" max="1.6" step="0.05" value="1"> <span id="intTxt">1.00</span></label>
-      <label>Strobe amount <input type="range" id="strobe" min="0" max="1" step="0.05" value="0.7"> <span id="strTxt">0.70</span></label>
-      <label>Palette <select id="palette"><option value="reference">reference (red / cream / gold / blue)</option><option value="hot">hot</option><option value="cool">cool</option><option value="mono">mono</option></select></label>
-    </fieldset>
-    <fieldset><legend>4 · Output</legend>
-      <label>Aspect <select id="aspect"><option value="source">source</option><option value="9:16">9:16 (TikTok/Reels crop)</option><option value="1:1">1:1</option><option value="16:9">16:9</option></select></label>
-      <label>Size <select id="size"><option value="720">720p</option><option value="1080" selected>1080p</option><option value="540">540p (fast)</option></select></label>
-      <label>Quality <select id="bitrate"><option value="0.14">high</option><option value="0.08">medium</option><option value="0.045">small file</option></select></label>
-      <label>FPS <select id="fps"><option value="30">30</option><option value="60" selected>60</option></select></label>
-      <button id="bExport" class="primary">Render &amp; export MP4</button>
+<main class="editor">
+  <header class="bar">
+    <p id="clipName">No clip</p>
+    <p id="outTxt">1080p · 60 fps</p>
+    <div class="bar-actions">
       <a id="dl" class="dl" style="display:none">Download</a>
-    </fieldset>
+      <button type="button" id="bExport">Export</button>
+    </div>
+  </header>
+
+  <section class="clip" aria-label="Clip">
+    <h2>Clip</h2>
+    <label class="well video-well">
+      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M1.5 5.2h2.4L5.4 3.2h5.2l1.5 2H14.5v7.6H1.5V5.2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="8" cy="8.6" r="2.1" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+      <span class="k">Video</span>
+      <span class="file-name">Choose a clip</span>
+      <input type="file" id="fVideo" accept="video/*,.mov,.mp4">
+    </label>
+    <label class="well song-well">
+      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M6.2 12.6a1.7 1.7 0 1 1-1.2-1.6V3.8l7-1.4v6.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="10.8" cy="10.2" r="1.7" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+      <span>
+        <span class="k">Song</span>
+        <span class="file-name">Choose a song</span>
+      </span>
+      <input type="file" id="fAudio" accept="audio/*,.mp3,.wav,.m4a">
+    </label>
+    <label class="switch">
+      <input type="checkbox" id="keepAudio">
+      <span>Use the video's audio</span>
+    </label>
+    <label class="field">
+      <span class="k">Analysis</span>
+      <select id="quality">
+        <option value="fast">fast (depth every 2nd frame)</option>
+        <option value="best">best (every frame)</option>
+      </select>
+    </label>
+    <button type="button" id="bAnalyze" class="accent">Analyse</button>
   </section>
-  <section id="stage">
+
+  <section class="viewer" id="stage">
     <canvas id="view"></canvas>
-    <div class="transport"><button id="bPlay">▶ Play</button><input type="range" id="scrub" min="0" max="1" step="0.001" value="0"><span id="time">0.00s</span></div>
-    <div id="prog"><div id="bar"></div><span id="progTxt">idle</span></div>
+    <p class="empty">Drop a clip and a song. <span>Volta locks the edit to the beat.</span></p>
+    <div id="prog" hidden><div id="bar"></div><span id="progTxt">idle</span></div>
+  </section>
+
+  <aside class="inspector">
+    <section class="look" aria-label="Look">
+      <h2>Look</h2>
+      <div class="field">
+        <span class="k">Seed</span>
+        <div class="seed-row">
+          <input type="number" id="seed" value="1" min="1" aria-label="Seed">
+          <button type="button" id="bReroll">Reroll</button>
+        </div>
+      </div>
+      <label class="field">
+        <span class="k">Punch <b id="intTxt">1.00</b></span>
+        <input type="range" id="intensity" min="0.4" max="1.6" step="0.05" value="1">
+      </label>
+      <label class="field">
+        <span class="k">Strobe <b id="strTxt">0.70</b></span>
+        <input type="range" id="strobe" min="0" max="1" step="0.05" value="0.7">
+      </label>
+      <label class="field">
+        <span class="k">Palette</span>
+        <select id="palette">
+          <option value="reference">reference</option>
+          <option value="hot">hot</option>
+          <option value="cool">cool</option>
+          <option value="mono">mono</option>
+        </select>
+        <span class="hint" id="paletteHint">red, cream, gold, blue</span>
+      </label>
+    </section>
+    <section class="out" aria-label="Output">
+      <h2>Output</h2>
+      <label class="field">
+        <span class="k">Aspect</span>
+        <select id="aspect">
+          <option value="source">source</option>
+          <option value="9:16">9:16 (TikTok/Reels crop)</option>
+          <option value="1:1">1:1</option>
+          <option value="16:9">16:9</option>
+        </select>
+      </label>
+      <div class="pair">
+        <label class="field">
+          <span class="k">Size</span>
+          <select id="size">
+            <option value="720">720p</option>
+            <option value="1080" selected>1080p</option>
+            <option value="540">540p (fast)</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="k">FPS</span>
+          <select id="fps">
+            <option value="30">30</option>
+            <option value="60" selected>60</option>
+          </select>
+        </label>
+      </div>
+      <label class="field">
+        <span class="k">Quality</span>
+        <select id="bitrate">
+          <option value="0.14">high</option>
+          <option value="0.08">medium</option>
+          <option value="0.045">small file</option>
+        </select>
+      </label>
+    </section>
+  </aside>
+
+  <section class="log-panel" id="notes" aria-label="Log">
+    <h2>Log</h2>
     <pre id="log"></pre>
-    <details><summary>Edit plan</summary><pre id="planTxt"></pre></details>
+  </section>
+
+  <section class="timeline" aria-label="Timeline">
+    <div class="tl-head">
+      <h2>Timeline</h2>
+      <button type="button" id="bPlay">▶ Play</button>
+      <p class="readout"><span id="time">0.00s</span> / <span id="durTxt">0.00s</span></p>
+    </div>
+    <div class="song-lane">
+      <canvas id="wave" width="600" height="56" aria-label="Song waveform"></canvas>
+      <input type="range" id="start" min="0" max="1" step="0.001" value="0" aria-label="Section start">
+    </div>
+    <div class="beat-lane">
+      <canvas id="beats" width="600" height="56" aria-label="Beat lane"></canvas>
+      <input type="range" id="scrub" min="0" max="1" step="0.001" value="0" aria-label="Playback">
+    </div>
+    <div class="tl-foot">
+      <span id="startTxt">0.00s</span>
+      <label class="switch">
+        <input type="checkbox" id="snapBar" checked>
+        <span>Snap to bars</span>
+      </label>
+      <button type="button" id="bAuto">Auto-pick</button>
+      <p id="audioInfo" class="info"></p>
+    </div>
+  </section>
+
+  <section class="plan-panel" aria-label="Edit plan">
+    <h2>Edit plan</h2>
+    <pre id="planTxt"></pre>
   </section>
 </main>
 <script type="module" src="src/app.js"></script>

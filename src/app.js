@@ -9,8 +9,23 @@ const $ = id => document.getElementById(id);
 const S = {videoFile: null, audioFile: null, video: null, songBuf: null, A: null, start: 0, mix: null, grid: null, plan: null, playing: false, busy: false, lastExport: null};
 window.dotfx = S;
 const logEl = $('log');
-const log = m => { const line = `[${new Date().toLocaleTimeString()}] ${m}`; console.log('[dotfx]', m); logEl.textContent += line + '\n'; logEl.scrollTop = 1e9; };
-const progress = (p, txt) => { $('bar').style.width = (clamp(p) * 100).toFixed(1) + '%'; $('progTxt').textContent = txt || ''; };
+function logKind(m) {
+  const s = String(m);
+  if (/^ERROR\b|\berror\b/i.test(s)) return 'bad';
+  if (/^ready\b|^exported\b|loaded from cache|\bOK\b/i.test(s)) return 'good';
+  if (/fail|unavailable|fallback|not available|^pick a\b/i.test(s)) return 'warn';
+  return '';
+}
+const log = m => {
+  const line = document.createElement('span');
+  const kind = logKind(m);
+  if (kind) line.className = kind;
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${m}`;
+  console.log('[dotfx]', m);
+  logEl.append(line);
+  logEl.scrollTop = 1e9;
+};
+const progress = (p, txt) => { $('bar').style.width = (clamp(p) * 100).toFixed(1) + '%'; $('progTxt').textContent = txt || ''; $('prog').hidden = false; };
 window.addEventListener('error', e => log('ERROR ' + e.message));
 window.addEventListener('unhandledrejection', e => log('ERROR ' + (e.reason && e.reason.message || e.reason)));
 
@@ -30,15 +45,57 @@ function outSize(maxH) {
 function previewSize() { const [W, H] = outSize(+$('size').value); const k = Math.min(1, 720 / Math.max(W, H)); return [Math.round(W * k / 2) * 2, Math.round(H * k / 2) * 2]; }
 
 // ---------- audio ----------
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function laneSize(c) {
+  const dpr = devicePixelRatio || 1, cssW = c.clientWidth || 600, cssH = c.clientHeight || 48;
+  c.width = Math.max(1, Math.round(cssW * dpr)); c.height = Math.max(1, Math.round(cssH * dpr));
+  c.parentElement.style.setProperty('--lane-h', cssH + 'px');
+  return {g: c.getContext('2d'), dpr, W: c.width, H: c.height};
+}
 function drawWave() {
-  const c = $('wave'), g = c.getContext('2d'), W = c.width = c.clientWidth * devicePixelRatio || 600, H = c.height = 90 * devicePixelRatio;
-  g.fillStyle = '#121217'; g.fillRect(0, 0, W, H); if (!S.A) return;
-  const A = S.A, wf = A.waveform, n = wf.length, mx = Math.max(...wf, 1e-6), D = A.duration, dur = S.video ? S.video.dur : 0;
-  const x0 = S.start / D * W, x1 = (S.start + dur) / D * W;
-  g.fillStyle = 'rgba(255,74,28,.18)'; g.fillRect(x0, 0, x1 - x0, H);
-  for (let i = 0; i < n; i++) { const x = i / n * W, h = wf[i] / mx * H * .9, inW = x >= x0 && x <= x1; g.fillStyle = inW ? '#ff4a1c' : '#555a66'; g.fillRect(x, (H - h) / 2, Math.max(1, W / n), h); }
-  g.fillStyle = '#ffd34a'; for (const b of A.bars) if (b.drop) g.fillRect(b.t / D * W, 0, 2, 8 * devicePixelRatio);
-  g.strokeStyle = '#fff'; g.lineWidth = 2; g.strokeRect(x0, 1, x1 - x0, H - 2);
+  const c = $('wave'), {g, dpr, W, H} = laneSize(c), start = $('start');
+  g.clearRect(0, 0, W, H); g.fillStyle = cssVar('--lane'); g.fillRect(0, 0, W, H);
+  if (!S.A || !S.video) {
+    g.fillStyle = cssVar('--line'); g.fillRect(0, H / 2 - dpr, W, 2 * dpr);
+    start.style.setProperty('--win', '0px'); drawBeats(); return;
+  }
+  const A = S.A, wf = A.waveform, n = wf.length, mx = Math.max(...wf, 1e-6), D = A.duration, dur = S.video.dur;
+  const x0 = S.start / D * W, x1 = (S.start + dur) / D * W, accent = cssVar('--accent'), mute = cssVar('--wave-mute');
+  g.fillStyle = cssVar('--wave-wash'); g.fillRect(x0, 0, Math.max(0, x1 - x0), H);
+  for (let i = 0; i < n; i++) { const x = i / n * W, h = wf[i] / mx * H * .86, inW = x >= x0 && x <= x1; g.fillStyle = inW ? accent : mute; g.fillRect(x, (H - h) / 2, Math.max(1, W / n), h); }
+  g.fillStyle = accent; for (const b of A.bars) if (b.drop) g.fillRect(b.t / D * W, 0, Math.max(2, 2 * dpr), 8 * dpr);
+  const win = D > 0 ? dur / D * c.clientWidth : c.clientWidth;
+  start.style.setProperty('--win', Math.min(c.clientWidth, Math.max(8, win)) + 'px');
+  drawBeats();
+}
+function drawBeats() {
+  const c = $('beats'), {g, dpr, W, H} = laneSize(c);
+  const mute = cssVar('--wave-mute'), accent = cssVar('--accent'), line = cssVar('--line'), ink = cssVar('--ink');
+  g.clearRect(0, 0, W, H); g.fillStyle = cssVar('--lane'); g.fillRect(0, 0, W, H);
+  const ruler = 14 * dpr; g.fillStyle = line; g.fillRect(0, ruler, W, dpr);
+  if (!S.A || !S.video) return;
+  const A = S.A, dur = S.video.dur || .001, t0 = S.start, D = A.duration, x = t => (t - t0) / dur * W;
+  const wf = A.waveform, n = wf.length, mx = Math.max(...wf, 1e-6);
+  const i0 = Math.max(0, Math.floor(t0 / D * n)), i1 = Math.min(n, Math.ceil((t0 + dur) / D * n));
+  g.fillStyle = mute; const barW = Math.max(dpr, W / Math.max(1, i1 - i0));
+  for (let i = i0; i < i1; i++) { const h = wf[i] / mx * (H - ruler - 16 * dpr) * .85, px = x((i + .5) / n * D); g.fillRect(px, ruler + (H - ruler - h) / 2, barW, h); }
+  g.font = `${11 * dpr}px ${cssVar('--font-ui')}`; g.textBaseline = 'top'; g.fillStyle = mute;
+  const step = dur > 30 ? 5 : dur > 12 ? 2 : 1;
+  for (let s = 0; s <= dur + 1e-6; s += step) { const px = x(t0 + s); g.fillRect(px, ruler - 6 * dpr, dpr, 6 * dpr); if (px < W - 24 * dpr) g.fillText(s + 's', px + 3 * dpr, dpr); }
+  const y = H - 8 * dpr;
+  for (const t of A.beats) { if (t < t0 - 1e-3 || t >= t0 + dur) continue; g.beginPath(); g.arc(x(t), y, 1.6 * dpr, 0, Math.PI * 2); g.fill(); }
+  for (const b of A.bars) {
+    if (b.t < t0 - 1e-3 || b.t >= t0 + dur) continue;
+    const px = x(b.t), r = 4.5 * dpr; g.fillStyle = b.drop ? accent : ink;
+    g.beginPath(); g.moveTo(px, y - r); g.lineTo(px + r * .7, y); g.lineTo(px, y + r); g.lineTo(px - r * .7, y); g.closePath(); g.fill();
+    g.fillStyle = mute;
+  }
+  if (document.body.dataset.ready) {
+    const px = +$('scrub').value * W;
+    g.strokeStyle = accent; g.lineWidth = Math.max(1, dpr); g.setLineDash([3 * dpr, 3 * dpr]);
+    g.beginPath(); g.moveTo(px, 6 * dpr); g.lineTo(px, H); g.stroke(); g.setLineDash([]);
+    g.fillStyle = accent; g.fillRect(px - 3.5 * dpr, 0, 7 * dpr, 5 * dpr);
+  }
 }
 function snapStart(t) {
   if (!$('snapBar').checked || !S.A || S.keep) return t;
@@ -63,9 +120,18 @@ async function autoPick() {
 }
 
 // ---------- plan / preview ----------
+function showOut() {
+  const f = fps();
+  if (!S.video && $('aspect').value === 'source') { $('outTxt').textContent = `${$('size').value}p · ${f} fps`; return; }
+  const [W, H] = outSize(+$('size').value);
+  $('outTxt').textContent = `${W} × ${H} · ${f} fps`;
+}
 function replan() {
+  showOut();
+  if (S.video) $('durTxt').textContent = S.video.dur.toFixed(2) + 's';
   if (!S.video || !S.grid) return;
   S.plan = makePlan(S.grid, S.video.dur, S.video, opts());
+  document.body.dataset.ready = '1';
   $('planTxt').textContent = describePlan(S.plan);
   const [W, H] = previewSize(); R.setSize(W, H); R.setData(S.video, S.plan, fps());
   drawFrame(+$('scrub').value * S.video.dur);
@@ -98,7 +164,7 @@ async function analyze() {
   if (S.busy) return; S.videoFile = $('fVideo').files[0] || S.videoFile; S.audioFile = $('fAudio').files[0] || S.audioFile;
   S.keep = $('keepAudio').checked;
   if (!S.videoFile) { log('pick a video first'); return; }
-  if (!S.keep && !S.audioFile) { log('pick a song, or tick "keep the video\'s own audio"'); return; }
+  if (!S.keep && !S.audioFile) { log('pick a song, or tick "use the video\'s audio"'); return; }
   S.busy = true; stop(); setButtons();
   try {
     const t0 = performance.now(), q = $('quality').value;
@@ -133,8 +199,24 @@ async function doExport() {
   finally { const [pw, ph] = previewSize(); R.setSize(pw, ph); R.setData(S.video, S.plan, fps()); S.busy = false; setButtons(); drawFrame(+$('scrub').value * S.video.dur); }
   return res;
 }
-function setButtons() { for (const id of ['bAnalyze', 'bExport', 'bAuto', 'bReroll', 'bPlay']) $(id).disabled = S.busy || (id !== 'bAnalyze' && !S.plan); }
+function setButtons() {
+  for (const id of ['bAnalyze', 'bExport', 'bAuto', 'bReroll', 'bPlay']) $(id).disabled = S.busy || (id !== 'bAnalyze' && !S.plan);
+  $('bAnalyze').classList.toggle('accent', !S.plan);
+  $('bExport').classList.toggle('accent', !!S.plan);
+}
+function bindFileName(id, empty) {
+  const input = $(id), name = input.parentElement.querySelector('.file-name');
+  input.addEventListener('change', () => {
+    const file = input.files[0];
+    name.textContent = file ? file.name : empty;
+    if (id === 'fVideo') $('clipName').textContent = file ? file.name : 'No clip';
+  });
+}
 setButtons();
+bindFileName('fVideo', 'Choose a clip');
+bindFileName('fAudio', 'Choose a song');
+drawWave();
+showOut();
 
 $('bAnalyze').onclick = () => analyze().catch(() => {});
 $('bExport').onclick = () => doExport().catch(() => {});
@@ -143,8 +225,11 @@ $('bReroll').onclick = () => { $('seed').value = (+$('seed').value || 1) + 1; re
 $('bPlay').onclick = play;
 $('start').oninput = () => { $('startTxt').textContent = (+$('start').value).toFixed(2) + 's'; S.start = +$('start').value; drawWave(); };
 $('start').onchange = () => S.A && !S.keep && setStart(+$('start').value + .010, 'manual');
-$('scrub').oninput = () => { if (S.playing) stop(); S.video && drawFrame(+$('scrub').value * S.video.dur); };
-for (const id of ['seed', 'palette', 'fps', 'aspect', 'size']) $(id).onchange = replan;
+$('scrub').oninput = () => { if (S.playing) stop(); if (S.video) drawFrame(+$('scrub').value * S.video.dur); drawBeats(); };
+for (const id of ['seed', 'fps', 'aspect', 'size']) $(id).onchange = replan;
+const paletteNotes = {reference: 'red, cream, gold, blue'};
+function showPalette() { $('paletteHint').textContent = paletteNotes[$('palette').value] || ''; }
+$('palette').onchange = () => { showPalette(); replan(); };
 for (const [id, txt] of [['intensity', 'intTxt'], ['strobe', 'strTxt']]) { $(id).oninput = () => $(txt).textContent = (+$(id).value).toFixed(2); $(id).onchange = replan; }
 window.addEventListener('resize', drawWave);
 
