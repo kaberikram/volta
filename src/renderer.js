@@ -57,6 +57,7 @@ export class DotRenderer {
     if (this.stage.need) this.stage.resize(W, H);
   }
   setData(video, plan, fps) {
+    if (video !== this.V) { for (const b of this.bmpCache.values()) b.close?.(); this.bmpCache.clear(); }   // frames are cached by index: drop the previous clip's
     this.V = video; this.plan = plan; this.fps = fps; this.lr.fill(-1); this.ld.fill(-1);
     const ef = t => Math.max(0, Math.floor(t * fps + 1e-6)), SF = fps / 30;
     this.ev = plan.sched.map(e => ({f: ef(e.t) + Math.round((e.strobe || 0) * SF), look: e.look, pitch: e.pitch, strobe: !!e.burst})).sort((a, b) => a.f - b.f);
