@@ -275,8 +275,8 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
   const calmMean = (t0, t1) => { let s2 = 0, c = 0; for (let i = Math.floor(t0 * OH); i <= Math.min(M - 1, Math.ceil(t1 * OH)); i++) { s2 += calm[i]; c++; } return c ? s2 / c : 0; };
   const addShot = (t, t1, bi, entrance, mid) => {
     const still = calmMean(t, t1) > .6, fan = stageBars[bi].lasers === 'fan';
-    let kinds = entrance ? ['push', 'orbit', 'top'] : still && !mid ? ['orbit', 'top'] : ['orbit', 'low', 'top', 'push', 'track', 'rake'];
-    kinds = kinds.filter(k => k !== prevKind && (k !== 'top' || nP - lastTop >= 3) && (k !== 'rake' || fan));
+    let kinds = entrance ? ['push', 'orbit', 'low'] : still && !mid ? ['orbit', 'orbit', 'top'] : ['orbit', 'orbit', 'low', 'top', 'push', 'track', 'track', 'rake'];
+    kinds = kinds.filter(k => k !== prevKind && (k !== 'top' || nP - lastTop >= 4) && (k !== 'rake' || fan));
     if (!kinds.length) kinds = ['orbit', 'low'].filter(k => k !== prevKind);
     const kind = RC.pick(kinds); if (kind === 'top') lastTop = nP;
     az += RC.range(70, 150) * Math.PI / 180 * (RC() < .5 ? -1 : 1);
