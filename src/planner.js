@@ -176,10 +176,10 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
   const stillT = t => { const fz = plan.freeze; return (fz && t >= fz.t0 && t < fz.t1) || plan.holds.some(h => t >= h.t0 && t < h.t1); };
   // --- orbit: angle integrates faster when the dancer is still (pure, 30 Hz grid)
   const OH = 30, M = Math.ceil(dur * OH) + 2, calm = new Float64Array(M), acc = new Float64Array(M), dir = RS() < .5 ? -1 : 1;
-  let cv = 1 - smoothstep(.15, .55, stillT(0) ? 0 : env[sf(0)]), av = 0;
+  let cv = 1 - smoothstep(.08, .4, stillT(0) ? 0 : env[sf(0)]), av = 0;
   for (let i = 0; i < M; i++) {
-    const t = i / OH, e = stillT(t) ? 0 : env[sf(t)], tgt = 1 - smoothstep(.15, .55, e);
-    if (i) { const tau = tgt > cv ? .5 : .12; cv += (tgt - cv) * (1 - Math.exp(-1 / OH / tau)); av += cv / OH; }
+    const t = i / OH, e = stillT(t) ? 0 : env[sf(t)], tgt = 1 - smoothstep(.08, .4, e);
+    if (i) { const tau = tgt > cv ? .7 : .1; cv += (tgt - cv) * (1 - Math.exp(-1 / OH / tau)); av += cv * cv / OH; }
     calm[i] = cv; acc[i] = av;
   }
   plan.orbit = {hz: OH, calm, acc, dir};
@@ -203,10 +203,10 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
   }
   const caps = {drop: 4, half: 4, spark: 2, quarter: 5, accel: 6, freeze: 2, echo: 4, end: 1};
   const barOf = t => { let b = -1; for (let i = 0; i < NBar; i++) if (barT(i) <= t + 1e-6) b = i; return b; };
-  const forced = new Set(runs.map(r => r.t0));
-  const list = [...cand.values()].map(c => ({...c, S: .6 * c.beat + .8 * c.move + .3 * (c.beat && c.move) + .25 * c.down, forced: forced.has(c.t) || runs.some(r => Math.abs(r.t0 - c.t) < 1e-6)}));
+  const runDown = runs.map(r => barT(r.b0));
+  const list = [...cand.values()].map(c => ({...c, S: .6 * c.beat + .8 * c.move + .3 * (c.beat && c.move) + .25 * c.down, forced: runDown.some(t => Math.abs(t - c.t) < 1e-6)}));
   const byBar = new Map(); for (const c of list) { const b = barOf(c.t); if (!byBar.has(b)) byBar.set(b, []); byBar.get(b).push(c); }
-  for (const r of runs) if (!list.some(c => Math.abs(c.t - r.t0) < 1e-6) && r.t0 < dur - .05) { const c = {j: -1, t: r.t0, beat: 1, move: 0, down: 1, mv: 0, S: 2, forced: true}; const b = barOf(r.t0); if (!byBar.has(b)) byBar.set(b, []); byBar.get(b).push(c); }
+  for (const t of runDown) if (!list.some(c => Math.abs(c.t - t) < 1e-6) && t < dur - .05) { const c = {j: -1, t, beat: 1, move: 0, down: 1, mv: 0, S: 2, forced: true}; const b = barOf(t); if (!byBar.has(b)) byBar.set(b, []); byBar.get(b).push(c); }
   const chosen = [];
   for (const [b, cs] of byBar) {
     const P_ = b >= 0 ? stages[b] === 'P' : scene === 'plates';
@@ -238,13 +238,16 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
     const style = GLASS.has(mat) ? 'thin' : mat === 'redGloss' ? (h(i, 5) < .5 ? 'thin' : 'pebble') : mat === 'whiteHot' || mat === 'gold' ? (h(i, 5) < .5 ? 'bar' : 'pebble') : 'pebble';
     const s2 = st[k], w = s2.ok ? (s2.x1 - s2.x0 + 1) / video.aw * 2 * (video.w / video.h) * (2.4 - 1.8 * s2.pd) * fit.k : .6;
     // ring slot with clearance against the ghosts that can still be alive
-    let slot = null, bestMin = -1;
-    for (let q = 0; q < 8; q++) {
-      const A = phi0 + (i + q) * 2.39996, r = 2.3 + 1.2 * ((i + q) * .618034 % 1), x = r * Math.sin(A), z = r * Math.cos(A);
-      let mn = 1e9, ok = true;
-      for (const g of ghosts.slice(-GHOST.cap)) { const d = Math.hypot(x - g.r * Math.sin(g.ang), z - g.r * Math.cos(g.ang)); mn = Math.min(mn, d - (.5 * (w + g.w) + .15)); if (d < .5 * (w + g.w) + .15) ok = false; }
-      if (ok) { slot = {A, r}; break; } if (mn > bestMin) { bestMin = mn; slot = {A, r}; }
+    // preferred spot: golden angle on the inner ring; else the nearest free spot on 3 rings x 24 angles; else the roomiest
+    const pref = phi0 + i * 2.39996, near = ghosts.slice(-GHOST.cap);
+    const room = (A, r) => { let mn = 1e9; for (const g of near) mn = Math.min(mn, Math.hypot(r * Math.sin(A) - g.r * Math.sin(g.ang), r * Math.cos(A) - g.r * Math.cos(g.ang)) - (.5 * (w + g.w) + .15)); return mn; };
+    let slot = null, best = null;
+    for (const r of [2.4 + .5 * h(i, 7), 3.3 + .3 * h(i, 8), 4.2]) {
+      for (let q = 0; q < 24; q++) { const A = pref + (q % 2 ? 1 : -1) * Math.ceil(q / 2) * Math.PI / 12, m = room(A, r);
+        if (m >= 0) { slot = {A, r}; break; } if (!best || m > best.m) best = {A, r, m}; }
+      if (slot) break;
     }
+    if (!slot) slot = best;
     const hold = seeded ? 0 : clamp(.5 * P, .2, .3), glide = seeded ? 0 : clamp(1.5 * P, .6, 1);
     ghosts.push({i, t: c.t, f, di: k, kind: seeded ? 'seed' : c.beat && c.move ? 'both' : c.move ? 'move' : 'beat', mat, style, ang: slot.A, r: slot.r, w,
       yawOff: 40 * Math.PI / 180 * (2 * h(i, 3) - 1), spin: (h(i, 4) < .5 ? -1 : 1) * (.25 + .35 * h(i, 6)), hold, glide, seeded: !!seeded,
@@ -288,14 +291,14 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
   return Object.assign(plan, {scene, sceneNote: note, stages, runs, stageBars, shots, ghosts});
 }
 
-/** 0..1 orbit state at t: {ang, calm, acc}. Before 0 the stage is assumed calm. */
+/** orbit state at t: {ang, calm 0..1, acc = integral of calm^2}. Before 0 the stage keeps its first state. */
 export function orbitAt(plan, t) {
   const o = plan.orbit; if (!o) return {ang: 0, calm: 1, acc: Math.max(0, t)};
   const x = t * o.hz;
-  if (x <= 0) { const acc = t * o.calm[0]; return {ang: o.dir * (.05 * t + .26 * acc), calm: o.calm[0], acc}; }
+  if (x <= 0) { const acc = t * o.calm[0] * o.calm[0]; return {ang: o.dir * (.03 * t + .3 * acc), calm: o.calm[0], acc}; }
   const i = Math.min(o.acc.length - 2, Math.floor(x)), f = Math.min(1, x - i);
   const acc = o.acc[i] + (o.acc[i + 1] - o.acc[i]) * f, calm = o.calm[i] + (o.calm[i + 1] - o.calm[i]) * f;
-  return {ang: o.dir * (.05 * t + .26 * acc), calm, acc};
+  return {ang: o.dir * (.03 * t + .3 * acc), calm, acc};
 }
 export const inRun = (plan, t) => plan.runs ? plan.runs.findIndex(r => t >= r.t0 - 1e-6 && t < r.t1 - 1e-6) : -1;
 

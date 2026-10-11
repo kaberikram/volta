@@ -6,3 +6,4 @@ node_modules/
 *.wav
 *.m4a
 test/e2e_run.log
+test/out/
