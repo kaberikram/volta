@@ -31,7 +31,7 @@ window.addEventListener('unhandledrejection', e => log('ERROR ' + (e.reason && e
 
 const R = new DotRenderer($('view'));
 S.renderer = R;
-const opts = () => ({seed: +$('seed').value || 1, intensity: +$('intensity').value, strobe: +$('strobe').value, palette: $('palette').value});
+const opts = () => ({seed: +$('seed').value || 1, intensity: +$('intensity').value, strobe: +$('strobe').value, palette: $('palette').value, scene: $('scene').value});
 const fps = () => +$('fps').value;
 
 function outSize(maxH) {
@@ -89,6 +89,12 @@ function drawBeats() {
     if (b.t < t0 - 1e-3 || b.t >= t0 + dur) continue;
     const px = x(b.t), r = 4.5 * dpr; g.fillStyle = b.drop ? accent : ink;
     g.beginPath(); g.moveTo(px, y - r); g.lineTo(px + r * .7, y); g.lineTo(px, y + r); g.lineTo(px - r * .7, y); g.closePath(); g.fill();
+    g.fillStyle = mute;
+  }
+  if (S.plan && S.plan.runs) {                       // plates runs under the ruler, a tick per pose ghost
+    g.fillStyle = mute;
+    for (const r of S.plan.runs) g.fillRect(r.t0 / dur * W, ruler + 2 * dpr, Math.max(dpr, (r.t1 - r.t0) / dur * W), 2 * dpr);
+    for (const gh of S.plan.ghosts || []) { if (gh.t < 0) continue; g.fillStyle = gh.hidden ? mute : cssVar('--muted'); g.fillRect(gh.t / dur * W, ruler + 5 * dpr, dpr, 5 * dpr); }
     g.fillStyle = mute;
   }
   if (S.fx && S.fx.length) {
@@ -209,6 +215,7 @@ function replan() {
   if (!S.video || !S.grid) return;
   S.plan = makePlan(S.grid, S.video.dur, S.video, opts());
   bindFx(S.plan);
+  showScene();
   document.body.dataset.ready = '1';
   $('planTxt').textContent = describePlan(S.plan);
   const [W, H] = previewSize(); R.setSize(W, H); R.setData(S.video, S.plan, fps());
@@ -368,6 +375,15 @@ $('start').onchange = () => S.A && !S.keep && setStart(+$('start').value + .010,
 $('scrub').oninput = () => { if (S.playing) stop(); if (S.video) drawFrame(+$('scrub').value * S.video.dur); drawBeats(); };
 for (const id of ['seed', 'fps', 'aspect', 'size']) $(id).onchange = replan;
 const paletteNotes = {reference: 'red, cream, gold, blue'};
+const sceneNotes = {mix: 'alternates dots with pose-ghost plates', dots: 'the dot looks only', plates: 'pose ghosts on a laser stage'};
+let lastSceneNote = '';
+function showScene() {
+  const note = S.plan && S.plan.sceneNote;
+  $('sceneHint').textContent = note || sceneNotes[$('scene').value] || '';
+  if (note && note !== lastSceneNote) log('scene: ' + note);
+  lastSceneNote = note || '';
+}
+$('scene').onchange = () => { showScene(); replan(); };
 function showPalette() { $('paletteHint').textContent = paletteNotes[$('palette').value] || ''; }
 $('palette').onchange = () => { showPalette(); replan(); };
 for (const [id, txt] of [['intensity', 'intTxt'], ['strobe', 'strTxt']]) { $(id).oninput = () => $(txt).textContent = (+$(id).value).toFixed(2); $(id).onchange = replan; }
