@@ -125,6 +125,18 @@ async function stageChecks(page, shoot, glExpect = GL_CLEAN) {
   { const dotsInfo = await reinit({opts: {scene: 'dots'}}); void dotsInfo; let dm = 0; for (const p of picks.slice(0, 6)) dm += (await shoot(p.t)).ms; await reinit({});
     const sm = shots.slice(0, 6).reduce((a, s) => a + s.ms, 0), r = sm / Math.max(1, dm);
     (r < 3 ? check(true, 'stage cost vs dots', `${(sm / 6).toFixed(0)} vs ${(dm / 6).toFixed(0)} ms/frame (x${r.toFixed(2)})`) : warn('stage cost vs dots', `x${r.toFixed(2)} (${(sm / 6).toFixed(0)} vs ${(dm / 6).toFixed(0)} ms/frame)`)); }
+  // 9:16: the camera keeps the dancer near the centre on tracking shots and most of the ring in orbit shots
+  { const info9 = await reinit({aspect: '9:16'}), items9 = [], tr = [], orb = [];
+    for (let k = 0; k < 16; k++) { const t = ft((k + .5) / 16 * info9.dur); if (!inRun(t)) continue; const s = await shoot(t);
+      if (s.stats.shot === 'track') tr.push(Math.abs(s.stats.dancerNdcX)); if (s.stats.shot === 'orbit' && s.stats.ringInFrame != null) orb.push(s.stats.ringInFrame);
+      if (items9.length < 8) items9.push({url: await page.evaluate(tt => window.H.png(tt), t), label: `${t.toFixed(2)}s ${s.stats.shot} ring ${s.stats.ringInFrame}`}); }
+    check(info9.W < info9.H && tr.every(x => x < .5), `9:16 ${info9.W}x${info9.H}: tracked dancer stays near the centre`, `|ndc.x| ${tr.map(x => x.toFixed(2)).join(' ') || '(no track shot sampled)'}`);
+    // a tall frame can't hold the whole ~8 m ring without an extreme lens: every orbit shows a good part of it, ~40% on average
+    const mean = orb.length ? orb.reduce((a, b) => a + b, 0) / orb.length : 1;
+    check(orb.every(x => x >= .25) && mean >= .4, '9:16: orbit shots keep the ring in frame', `in frame ${orb.join(' ') || '(no orbit shot sampled)'} (mean ${mean.toFixed(2)})`);
+    fs.mkdirSync(OUT, {recursive: true});
+    if (items9.length) writePng(path.join(OUT, `stage_${SCENE}_916_contact.png`), await page.evaluate(([it, title]) => window.H.sheet(it, {cols: 8, w: 200, title}), [items9, `stage ${SCENE} 9:16 ${info9.W}x${info9.H}`]));
+    await reinit({}); }
   // key frames + contact sheet
   fs.mkdirSync(OUT, {recursive: true}); const items = [];
   for (const [i, p] of picks.entries()) { const url = await page.evaluate(tt => window.H.png(tt), p.t); writePng(path.join(OUT, `stage_${SCENE}_${String(i).padStart(2, '0')}_${p.t.toFixed(2)}s_${p.label}.png`), url);
@@ -175,7 +187,17 @@ async function uiCheck(browser, origin) {
     const q = await page.evaluate(() => ({scene: window.dotfx.plan.scene, planTxt: document.getElementById('planTxt').textContent.split('\n')[1], hint: document.getElementById('sceneHint').textContent}));
     check(q.scene === val && re.test(q.planTxt), `UI: Scene -> ${val}`, JSON.stringify(q));
     if (val === 'plates') await page.screenshot({path: path.join(OUT, 'ui_plates.png')});
+    if (val !== 'dots') {        // plates runs are marked along the bottom edge of the beat lane
+      const band = await page.evaluate(() => { const S = window.dotfx, c = document.getElementById('beats'), g = c.getContext('2d'), dpr = devicePixelRatio || 1, y = Math.round(c.height - 2 * dpr), dur = S.video.dur;
+        const lum = t => { const d = g.getImageData(Math.min(c.width - 1, Math.round(t / dur * c.width)), y, 1, 1).data; return d[0] + d[1] + d[2]; };
+        const r = S.plan.runs[0], gap = [0, ...S.plan.runs.flatMap(q => [q.t0, q.t1]), dur].reduce((best, t, i, a) => i % 2 || i + 1 >= a.length ? best : (a[i + 1] - t > best[1] - best[0] ? [t, a[i + 1]] : best), [0, 0]);
+        return {inside: lum((r.t0 + r.t1) / 2), outside: gap[1] - gap[0] > .3 ? lum((gap[0] + gap[1]) / 2) : null}; });
+      check(band.inside > 300 && (band.outside == null || band.outside < band.inside / 2), `UI: plates runs marked on the beat lane (${val})`, JSON.stringify(band));
+    }
   }
+  const lock = await page.evaluate(() => { const S = window.dotfx; S.busy = S.exporting = true; S.api.setButtons(); const on = document.getElementById('scene').disabled && document.getElementById('scrub').disabled;
+    S.api.replan(); const deferred = !!S.replanPending; S.busy = S.exporting = false; S.replanPending = false; S.api.setButtons(); return {on, deferred, off: !document.getElementById('scene').disabled}; });
+  check(lock.on && lock.deferred && lock.off, 'UI: edit controls lock during an export and re-planning waits for it', JSON.stringify(lock));
   check(!errs.length, 'UI: no page errors', errs.join(' | ').slice(0, 300));
   await page.close();
 }

@@ -193,3 +193,23 @@ test('describePlan lists the scene, ghosts and camera shots', () => {
   assert.match(t, /scene mix \| stages [DP ]+ \| plates /); assert.match(t, /ghost (beat|move|both) /); assert.match(t, /cam (orbit|low|top|push|track|rake)/);
   assert.match(describePlan(mk('dots')), /scene dots/);
 });
+
+test('a dancer too small to print (under 1% of the frame) falls back to dots with a note', () => {
+  const small = {...V, area: V.area.map(a => Math.min(a * .1, .009))};
+  for (const scene of ['mix', 'plates']) {
+    const p = makePlan(grid, V.dur, small, {seed: 1, scene});
+    assert.equal(p.scene, 'dots'); assert.ok(/too small/.test(p.sceneNote), p.sceneNote); assert.equal(p.runs.length, 0); assert.equal(p.ghosts.length, 0);
+  }
+});
+
+test('long clips keep printing ghosts to the end, live ghosts stay capped', async () => {
+  const { synthSection } = await import('./synth.js');
+  const L = 6, cat = a => Array.from({length: L}, () => a).flat();
+  const long = {...V, n: V.n * L, dur: V.dur * L, dm: cat(V.dm), area: cat(V.area), piv: cat(V.piv), motion: cat(V.motion)};
+  const g2 = synthSection(long.dur).grid;
+  for (const scene of ['mix', 'plates']) {
+    const p = makePlan(g2, long.dur, long, {seed: 3, scene}), late = p.ghosts.filter(g => !g.hidden && g.t > long.dur - 16);
+    assert.ok(late.length >= 3, `${scene}: ${late.length} visible ghosts in the last 16 s of a ${long.dur}s clip`);
+    for (let t = 0; t < long.dur; t += .5) assert.ok(ghostsAt(p, t).filter(x => x.coll === 0).length <= GHOST.cap);
+  }
+});
