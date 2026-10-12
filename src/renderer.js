@@ -23,10 +23,10 @@ export const LOOKS = {
   scatter:{bg: '#000000', dot: '#ffffff', grid: .5},
   raw:    {mode: 1},
   // plates stage looks (rendered by stage.js; every stage parameter lives under st, fallback = dots look if the stage can't run)
-  plates:  {bg: '#06141a', st: {fallback: 'mono', fog: '#06141a', fogD: .06, sky: '#07141a', spot: 1, laser: 1, gridC: '#cfefff', gridK: 1.3}},
-  platesR: {bg: '#1a0303', st: {fallback: 'mono', fog: '#1a0303', fogD: .075, sky: '#3a0606', sky2: '#060101', spot: 1, spotTint: '#ff4a3a', laser: 1.6, gridC: '#ffe2dc', gridK: .8, emis: 1.4}},
-  platesW: {bg: '#2a3438', st: {fallback: 'mono', fog: '#2a3438', fogD: .085, sky: '#34414a', sky2: '#0b1013', haze: .5, spot: 1.5, laser: 1.1, gridK: 1, con: -.04, refl: .85}},
-  platesC: {bg: '#031820', st: {fallback: 'mono', fog: '#031820', fogD: .07, sky: '#05202a', spot: 1.2, laser: 1, red: '#00c6ee', gridK: 1.2}},
+  plates:  {bg: '#06141a', st: {fallback: 'mono', fog: '#06141a', fogD: .11, fogH: 4.5, sky: '#07141a', spot: 1, laser: 1, gridC: '#cfefff', gridK: 1.3}},
+  platesR: {bg: '#160303', st: {fallback: 'mono', fog: '#160303', fogD: .1, fogH: 4.5, sky: '#220404', sky2: '#050101', haze: .7, spot: 1, spotTint: '#ff4a3a', laser: 1.6, gridC: '#ffe2dc', gridK: .8, emis: 1.4}},
+  platesW: {bg: '#1c2428', st: {fallback: 'mono', fog: '#1c2428', fogD: .085, sky: '#26323a', sky2: '#080c0e', haze: .45, spot: 1.3, laser: 1.1, gridK: 1, con: -.04, refl: .85}},
+  platesC: {bg: '#031820', st: {fallback: 'mono', fog: '#031820', fogD: .11, fogH: 4.5, sky: '#05202a', spot: 1.2, laser: 1, red: '#00c6ee', gridK: 1.2}},
   platesK: {bg: '#000000', st: {fallback: 'mono', fog: '#000000', fogD: .04, sky: '#000000', sky2: '#000000', haze: 0, spot: 0, laser: 0, gridK: 0, hoop: .4, emis: 2, dancerK: .25}},
 };
 export class DotRenderer {
