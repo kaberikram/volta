@@ -351,7 +351,7 @@ export class LiveSession {
   /** go live, paused at song time `at`; the song starts once the stage is calibrated (or after 1.5 s) */
   async start({songBuf, A, opts, fx, at = 0}) {
     await this.stop();
-    const an = this.an; an.reset();
+    const an = this.an; an.reset(); an.hRef = 0;        // the size reference is measured again (capture takes it from the new calibration)
     const core = this.core = new LiveCore(this.R, {w: this.w, h: this.h, aw: an.aw, ah: an.ah, mode: this.mode, A, opts, fx});
     if (this.mode !== 'luma') { try { this.R.stage.ensure(); } catch (e) {} }          // compile the stage now, not mid-song
     this.dur = A.duration; this.songBuf = songBuf; this.off = clamp(at, 0, this.dur); this.lastT = this.off; core.seek(this.off);

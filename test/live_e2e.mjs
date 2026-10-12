@@ -77,7 +77,7 @@ async function main() {
     check(tr.replay.added >= 1 && tr.replay.sorted && tr.replay.unique && tr.replay.perBarOk, 'playing on after a seek prints again, no burst, in order', JSON.stringify(tr.replay));
     check(tr.fwd.added <= 1 && Math.abs(tr.fwd.angAfter - tr.fwd.angPred) < 1e-6, 'seek forward: no backlog of prints, the orbit carries on', JSON.stringify(tr.fwd));
     check(tr.paused.fi2 === tr.paused.top && tr.paused.fi2 > tr.paused.fi1 && tr.paused.differ, 'paused: the newest camera frame is on screen', JSON.stringify(tr.paused));
-    check(tr.hold.inside === tr.hold.pin && tr.hold.after === tr.hold.top && tr.hold.top > tr.hold.pin, 'a hold shows the frame it entered on (pinned), then the camera again', JSON.stringify(tr.hold));
+    check(tr.hold.inside === tr.hold.pin && tr.hold.replanned === tr.hold.pin && tr.hold.after === tr.hold.top && tr.hold.top > tr.hold.pin, 'a hold shows the frame it entered on (pinned, also across a settings change), then the camera again', JSON.stringify(tr.hold));
     check(!tr.flash || tr.flash.held < tr.flash.open - 3, 'paused: no beat flash held on screen', JSON.stringify(tr.flash || 'no flash frame'));
     const rp = tr.replan;
     check(rp.sameRing && rp.sameOrbit && rp.phi0 && rp.seedsKept, 'live replan (palette, strobe, punch, seed) keeps the ring, its orbit and its plates', JSON.stringify(rp));

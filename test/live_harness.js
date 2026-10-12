@@ -83,8 +83,10 @@ window.L = {
     out.paused = {fi1: p1.st.fi, fi2: p2.st.fi, top: V.n - 1, differ: p1.hash !== p2.hash};
     // 4. a hold window: the frame on entry is pinned (survives 20 new camera frames), released after the window
     const n0h = Math.round(tf * 30) + 3; R.holds = [{f0: n0h, f1: n0h + 15}];
-    const h1 = await shot(core, n0h / 30); push(5, 20); const h2 = await shot(core, (n0h + 5) / 30); const h3 = await shot(core, (n0h + 16) / 30);
-    out.hold = {pin: h1.st.fi, inside: h2.st.fi, after: h3.st.fi, top: V.n - 1};
+    const h1 = await shot(core, n0h / 30); push(5, 20); const h2 = await shot(core, (n0h + 5) / 30);
+    core.replan({...OPTS}, liveFx(L.A)); R.holds = [{f0: n0h, f1: n0h + 15}]; push(5, 2); const hr = await shot(core, (n0h + 7) / 30);     // a settings change inside it
+    const h3 = await shot(core, (n0h + 16) / 30);
+    out.hold = {pin: h1.st.fi, inside: h2.st.fi, replanned: hr.st.fi, after: h3.st.fi, top: V.n - 1};
     R.holds = []; R.releaseLivePins();
     // 5. paused hold: a downbeat flash frame is not held on screen while paused
     const fl = R.flash.find(x => !x.burst && x.s > .6 && !R.stageOn(x.f) && x.f > 30);

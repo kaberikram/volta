@@ -154,8 +154,8 @@ export class DotRenderer {
   livePool(reset) {
     const gl = this.gl, N = 16;
     if (!this.pool) { this.pool = {slots: [], map: new Map(), next: 0}; for (let i = 0; i < N; i++) this.pool.slots.push({raw: this.tex(4, 4, gl.LINEAR, true), d: this.tex(4, 4, gl.NEAREST), fi: -1, pinned: false}); }
-    this.releaseLivePins();
-    if (reset) { this.pool.map.clear(); this.pool.next = 0; for (const s of this.pool.slots) s.fi = -1; }
+    // a re-plan keeps a freeze / hold snapshot (liveTick drops it once the song is outside a window); a new session drops all
+    if (reset) { this.releaseLivePins(); this.pool.map.clear(); this.pool.next = 0; for (const s of this.pool.slots) s.fi = -1; }
   }
   liveWin(n) {
     const fz = this.fz; if (fz && n >= fz.f0 && n < fz.f1) return 'fz';
