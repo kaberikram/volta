@@ -133,7 +133,7 @@ void main(){
 
 export const SLAB_VS = stageSrc(`
 layout(location=0) in vec2 aV; layout(location=1) in vec4 aA; layout(location=2) in vec4 aB;
-uniform mat4 uVP; uniform vec3 uGPos; uniform float uGYaw, uGTilt, uAge, uColl, uSxz, uN, uRh, uSeed, uMirror, uTwist, uT, uStyle;
+uniform mat4 uVP; uniform vec3 uGPos; uniform float uGYaw, uGTilt, uAge, uColl, uSxz, uN, uRh, uSeed, uMirror, uTwist, uT, uStyle, uCut;
 out vec3 vW, vN; out float vJ;
 float spow(float x,float e){ return sign(x)*pow(abs(x),e); }
 vec3 tiltX(vec3 v,float a){ float c=cos(a), s=sin(a); return vec3(v.x, v.y*c-v.z*s, v.y*s+v.z*c); }
@@ -144,7 +144,7 @@ void main(){
   vec2 jo=uStyle>1.5?(vec2(fract(rnd*11.3),fract(rnd*5.9))-.5)*.024:vec2(0.);
   float bj=clamp((uAge-.10*jN)/.06,0.,1.), bm=bj-1., bo=1.+2.7*bm*bm*bm+1.7*bm*bm;
   float cc=clamp((uColl*.6-.5*(1.-jN))/.12,0.,1.);
-  float sxz=max(bo,0.)*(1.-cc*cc)*uSxz;
+  float sxz=max(bo,0.)*(1.-cc*cc)*uSxz*(uCut>.5?mix(.55,1.,smoothstep(0.,.3,jN)):1.);
   float e=2./uN, c=cos(th), s=sin(th);
   vec2 se=vec2(spow(c,e),spow(s,e)), nn=normalize(vec2(spow(c,2.-e)/max(a,1e-3), spow(s,2.-e)/max(b,1e-3)));
   float ty=t*.5, rr=uRh*ty; vec3 p, n;
@@ -163,7 +163,7 @@ void main(){
   gl_Position=uVP*vec4(W,1.); }`);
 export const SLAB_FS = stageSrc(SPOTS + `
 in vec3 vW, vN; in float vJ; out vec4 o;
-uniform vec3 uAlb, uEmi, uSpec, uRimC, uKeyC, uRedC; uniform float uGloss, uRimK, uMetal, uE, uDark, uAdd, uBody, uMirror, uLaser, uNewest, uT;
+uniform vec3 uAlb, uEmi, uSpec, uRimC, uKeyC, uRedC; uniform float uGloss, uRimK, uMetal, uE, uDark, uAdd, uBody, uMirror, uLaser, uNewest, uT, uCut;
 void main(){
   vec3 N=normalize(vN), V=normalize(uEye-vW); if(dot(N,V)<0.) N=-N;
   float F=pow(1.-max(dot(N,V),0.),3.);
@@ -178,10 +178,10 @@ void main(){
   col*=mix(.4,1.,smoothstep(-.6,.4,N.y))*uDark;
   col+=uEmi*uE*(.35+.65*F);
   col+=uEmi*uNewest*smoothstep(.93,1.,fract(vW.y*5.-uT*1.7))*.8;
-  float mk=uMirror>.5?.35*exp(-1.5*vW.y):1.;
+  float mk=uMirror>.5?.35*exp(-1.5*vW.y):1., cutK=uCut>.5?smoothstep(0.,.22,vJ):1.;   // a pose cut by the frame bottom dissolves into the floor haze
   vec3 Pf=uMirror>.5?vec3(vW.x,-vW.y,vW.z):vW;
-  if(uAdd>.5){ vec3 g=(uEmi+uAlb*.35)*(uBody+1.4*F)*uE*(1.-fogAmt(Pf)); o=vec4(g*mk,0.); return; }
-  o=vec4(fogApply(col,Pf)*mk,1.); }`);
+  if(uAdd>.5){ vec3 g=(uEmi+uAlb*.35)*(uBody+1.4*F)*uE*(1.-fogAmt(Pf))*cutK; o=vec4(g*mk,0.); return; }
+  o=vec4(mix(uFogC,fogApply(col,Pf),cutK)*mk,1.); }`);
 
 export const BEAM_VS = stageSrc(`
 layout(location=0) in vec4 iA; layout(location=1) in vec4 iB; layout(location=2) in vec4 iC; layout(location=3) in vec4 iK;
