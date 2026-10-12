@@ -33,8 +33,16 @@ The first run downloads the models and libraries from public CDNs (needs interne
    - generated an edit plan and shown a live preview
 3. **Song section**: the waveform shows the chosen window (orange box; yellow ticks = detected drops).
    Drag **Start** to choose a different part (it snaps to bars unless you untick that), or press *Auto-pick*.
-4. **Style**: *Reroll* (or type a seed) for a new deterministic edit. *Punch* scales camera hits, shake, recoil and
-   flash strength. *Strobe amount* controls how many 1-frame raw/colour strobes there are. *Palette* changes the colour family.
+4. **Style**: *Reroll* (or type a seed) for a new deterministic edit. *Scene* picks the visual language:
+   - *dots + plates* (default) alternates the dot looks with **pose plates**: on strong beats and sudden moves the
+     dancer's pose freezes into a stack of thin horizontal plates (like a sliced 3D print). The plates stay on a dark
+     laser stage with fog, a reflective grid floor and cyan/white spots. They drift out to a ring and orbit while the
+     dancer is still; new ones glow, old ones darken and collapse.
+   - *dots only* is the original edit.
+   - *plates only* keeps the whole edit on the stage.
+
+   *Punch* scales camera hits, shake, recoil and flash strength. *Strobe amount* controls how many 1-frame raw/colour
+   strobes (blackouts on the stage) there are. *Palette* changes the colour family.
 5. **Output**: aspect (source, 9:16 TikTok/Reels crop that follows the person, 1:1, 16:9), size (540/720/1080p),
    quality (bitrate), fps 30/60. Press **Play** to preview with audio, or drag the scrub bar.
 6. **Render & export MP4**: an offline, frame-accurate render (it isn't a screen capture, so slow machines don't drop frames).
@@ -56,8 +64,10 @@ Analysis results are cached in IndexedDB (keyed by file name + size + settings),
 | Depth | transformers.js + Depth-Anything-V2-small. Tries WebGPU fp16, then WebGPU fp32, then WASM int8 (multi-thread when cross-origin isolated). Rolling percentile normalisation |
 | Person mask | MediaPipe PoseLandmarker-lite segmentation masks (GPU delegate). It finds full bodies at any distance and returns an empty mask when nobody is in frame. Falls back to the selfie-multiclass ImageSegmenter (GPU/CPU, benchmarked; picks the faster), then to a depth-threshold mask |
 | Clean-up | 3-frame temporal agreement, removes "pillar" false positives (top-touching, full-height, far components), centroid pivot + depth smoothing, frame-diff motion |
+| Plates stage plan | `planner.js` + `pose.js`: picks runs of bars (about 40%) for the stage and spawns pose ghosts on strong beats and pose-change onsets, snapped to the 1/8 grid with a novelty gate. Each ghost gets a material (red gloss/glass, white, graphite, teal stone), a ring slot and a lifetime (cap 14, at least 8 kept). The ring's orbit integrates faster while the dancer is still. Each plates bar gets a camera shot (orbit, ground skim, top-down, push-in, side track, laser rake). Plates are cut from the person mask at a fixed 8.5 cm pitch |
 | Planner | `planner.js`: seeded. Per-bar roles (`drop`, `half`, `quarter`, `spark`, `accel`, `freeze`, `echo`, `end`) → look schedule at varying rates, 1-frame strobes, downbeat flashes, detonations, echo hits, holds → slam, freeze-orbit, fly-through, scatter/re-form, camera swings, per-bar camera snaps |
 | Renderer | `renderer.js` + `shaders.js`: WebGL2 point cloud (each dot is a source pixel lifted by depth). Figure shells and depth layers, always-moving camera (kick dolly/whip alternating, bar snaps, drop orbit, fly-through, freeze orbit), shockwave rings, detonations with recoil, scatter + re-form, DOF, fog, bloom, chromatic split, shake, motion trails. Looks: LED source-colour dots, macro LED, ink-on-cream, gold-on-black, flat colour dots, inverted dots, glowing sparkle cloud, rainbow echo, raw strobe. No magenta |
+| Stage renderer | `stage.js`: HDR (RGBA16F, 4x MSAA on GPUs) synthetic stage. Planar-reflection floor with a white/red grid and arcs, height fog, spot cones and pools, red laser fans and cages, light pillars, a hoop at the dancer, instanced superellipse plates (print-in, glide, spin, collapse), and the live dancer as dense source-colour dots via the point shader. Then bloom, tonemap, camera motion blur and the shared composite (flash, shake, fade lane). Falls back to a dots look if WebGL can't run it |
 | Export | `exporter.js`: WebCodecs `VideoEncoder` (H.264 High) + `AudioEncoder` (AAC, or Opus if AAC isn't available), muxed with mp4-muxer (fast-start). Falls back to MediaRecorder WebM (real time) if WebCodecs fails |
 
 ## Notes / limits
@@ -86,11 +96,24 @@ src/app.js        UI wiring, preview/playback, pipeline orchestration (window.do
 src/audio.js      decode, tempo/beat/bar/drop analysis, section pick, final mix
 src/video.js      frame extraction, depth, segmentation, mask clean-up, pivots, cache
 src/planner.js    seeded edit planner + palettes
-src/renderer.js   WebGL2 dot/point-cloud renderer, camera, looks
+src/renderer.js   WebGL2 dot/point-cloud renderer, camera, looks (and the plates stage branch)
+src/stage.js      plates stage: HDR scene, rig, camera shots, ghosts, dancer
+src/pose.js       pose stats, source -> stage mapping, movement envelope, plate geometry
 src/shaders.js    GLSL (dots, bloom, composite)
 src/exporter.js   WebCodecs + mp4-muxer export, MediaRecorder fallback
 src/util.js       helpers (seeded RNG, smoothing, IndexedDB cache)
 test/             headless end-to-end test (Playwright + Chrome)
+```
+
+## Synthetic tests (no models, no network)
+
+`test/synth.js` fabricates an analysis bundle (a drawn dancer with depth and mask, motion, a 128 BPM grid). Run:
+
+```bash
+node --test test/plan_test.mjs        # planner: dots edit unchanged, determinism, plates runs, ghosts, orbit
+node test/plates_e2e.mjs              # renders through the real renderer in headless Chromium (SwiftShader):
+                                      # dots baseline hashes, scrub determinism, GL state, stage frames -> test/out/
+SCENE=plates FULL=1 node test/plates_e2e.mjs   # also writes MP4s to test/out/ (needs ffmpeg)
 ```
 
 ## Headless test

@@ -1,0 +1,199 @@
+{
+ "about": "DotRenderer framebuffer hashes (FNV-1a 32 of readPixels RGBA) on test/synth.js inputs. Regenerate: MODE=baseline node test/plates_e2e.mjs",
+ "size": 540,
+ "W": 962,
+ "H": 540,
+ "fps": 30,
+ "init": {
+  "seed": 1,
+  "palette": "reference",
+  "size": 540,
+  "fps": 30,
+  "aspect": "source"
+ },
+ "browser": "141.0.7390.37",
+ "gl": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+ "bundle": {
+  "dm": "744a1650",
+  "motion": "f5f91270",
+  "area": "49812f9a",
+  "piv": "90a94d5c",
+  "shape": "720x404 src 720x404 30fps n=480 dm=240@266x150/2"
+ },
+ "times": [
+  0.1,
+  0.36666666666666664,
+  1.6333333333333333,
+  3.6666666666666665,
+  6.5,
+  9.5,
+  9.8,
+  10.766666666666667,
+  11.3,
+  12.5,
+  13.833333333333334,
+  15.166666666666666
+ ],
+ "frames": [
+  3,
+  11,
+  49,
+  110,
+  195,
+  285,
+  294,
+  323,
+  339,
+  375,
+  415,
+  455
+ ],
+ "labels": [
+  "drop",
+  "even",
+  "strobe-raw",
+  "hold",
+  "still",
+  "det",
+  "offgrid",
+  "freeze",
+  "echo",
+  "pan",
+  "jump",
+  "reform"
+ ],
+ "hashes": [
+  "2780bdcc",
+  "7ebcf5d8",
+  "221ebd6a",
+  "4106bccf",
+  "66ba0ff0",
+  "aab22e9b",
+  "19a5c68f",
+  "9daecd65",
+  "597bebfa",
+  "cbb2929a",
+  "953f952e",
+  "3a34989b"
+ ],
+ "stats": [
+  {
+   "look": "ledred",
+   "fi": 3,
+   "freeze": false,
+   "held": false,
+   "luma": 0.3837,
+   "redFrac": 0.588,
+   "cyanFrac": 0.0001
+  },
+  {
+   "look": "ledred",
+   "fi": 11,
+   "freeze": false,
+   "held": false,
+   "luma": 0.306,
+   "redFrac": 0.7729,
+   "cyanFrac": 0
+  },
+  {
+   "look": "raw",
+   "fi": 49,
+   "freeze": false,
+   "held": false,
+   "luma": 0.1016,
+   "redFrac": 0,
+   "cyanFrac": 0
+  },
+  {
+   "look": "cyan",
+   "fi": 109,
+   "freeze": false,
+   "held": true,
+   "luma": 0.482,
+   "redFrac": 0,
+   "cyanFrac": 0.9246
+  },
+  {
+   "look": "sparkp",
+   "fi": 195,
+   "freeze": false,
+   "held": false,
+   "luma": 0.0763,
+   "redFrac": 0,
+   "cyanFrac": 0
+  },
+  {
+   "look": "led",
+   "fi": 285,
+   "freeze": false,
+   "held": false,
+   "luma": 0.2323,
+   "redFrac": 0.0102,
+   "cyanFrac": 0.0071
+  },
+  {
+   "look": "led",
+   "fi": 294,
+   "freeze": false,
+   "held": false,
+   "luma": 0.2055,
+   "redFrac": 0.0065,
+   "cyanFrac": 0.0112
+  },
+  {
+   "look": "sparkp",
+   "fi": 308,
+   "freeze": true,
+   "held": false,
+   "luma": 0.0875,
+   "redFrac": 0.0182,
+   "cyanFrac": 0.0039
+  },
+  {
+   "look": "echoB",
+   "fi": 339,
+   "freeze": false,
+   "held": false,
+   "luma": 0.382,
+   "redFrac": 0.0023,
+   "cyanFrac": 0.0386
+  },
+  {
+   "look": "echoY",
+   "fi": 375,
+   "freeze": false,
+   "held": false,
+   "luma": 0.7325,
+   "redFrac": 0.0095,
+   "cyanFrac": 0.0038
+  },
+  {
+   "look": "ledred",
+   "fi": 415,
+   "freeze": false,
+   "held": false,
+   "luma": 0.2819,
+   "redFrac": 0.607,
+   "cyanFrac": 0
+  },
+  {
+   "look": "scatter",
+   "fi": 455,
+   "freeze": false,
+   "held": false,
+   "luma": 0.2037,
+   "redFrac": 0.0066,
+   "cyanFrac": 0.0125
+  }
+ ],
+ "glState": {
+  "DEPTH_TEST": false,
+  "CULL_FACE": false,
+  "BLEND": false,
+  "POLYGON_OFFSET_FILL": false,
+  "SCISSOR_TEST": false,
+  "VERTEX_ARRAY_BINDING": "default",
+  "FRAMEBUFFER_BINDING": null,
+  "error": 0
+ }
+}

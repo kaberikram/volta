@@ -31,7 +31,7 @@ window.addEventListener('unhandledrejection', e => log('ERROR ' + (e.reason && e
 
 const R = new DotRenderer($('view'));
 S.renderer = R;
-const opts = () => ({seed: +$('seed').value || 1, intensity: +$('intensity').value, strobe: +$('strobe').value, palette: $('palette').value});
+const opts = () => ({seed: +$('seed').value || 1, intensity: +$('intensity').value, strobe: +$('strobe').value, palette: $('palette').value, scene: $('scene').value});
 const fps = () => +$('fps').value;
 
 function outSize(maxH) {
@@ -89,6 +89,12 @@ function drawBeats() {
     if (b.t < t0 - 1e-3 || b.t >= t0 + dur) continue;
     const px = x(b.t), r = 4.5 * dpr; g.fillStyle = b.drop ? accent : ink;
     g.beginPath(); g.moveTo(px, y - r); g.lineTo(px + r * .7, y); g.lineTo(px, y + r); g.lineTo(px - r * .7, y); g.closePath(); g.fill();
+    g.fillStyle = mute;
+  }
+  if (S.plan && S.plan.runs) {                       // plates runs along the lane's bottom edge, a tick per pose ghost under the ruler
+    g.fillStyle = cssVar('--muted');
+    for (const r of S.plan.runs) g.fillRect(r.t0 / dur * W, H - 3 * dpr, Math.max(dpr, (r.t1 - r.t0) / dur * W), 2 * dpr);
+    for (const gh of S.plan.ghosts || []) { if (gh.t < 0) continue; g.fillStyle = gh.hidden ? mute : cssVar('--muted'); g.fillRect(gh.t / dur * W, ruler + 5 * dpr, dpr, 5 * dpr); }
     g.fillStyle = mute;
   }
   if (S.fx && S.fx.length) {
@@ -204,6 +210,7 @@ function showOut() {
   $('outTxt').textContent = `${W} × ${H} · ${f} fps`;
 }
 function replan() {
+  if (S.exporting) { S.replanPending = true; return; }   // the export owns the renderer until it finishes
   showOut();
   if (S.video) $('durTxt').textContent = S.video.dur.toFixed(2) + 's';
   if (!S.video || !S.grid) return;
@@ -212,6 +219,7 @@ function replan() {
   document.body.dataset.ready = '1';
   $('planTxt').textContent = describePlan(S.plan);
   const [W, H] = previewSize(); R.setSize(W, H); R.setData(S.video, S.plan, fps());
+  showScene(); drawBeats();
   drawFrame(+$('scrub').value * S.video.dur);
 }
 let drawing = false, pending = null;
@@ -269,7 +277,7 @@ async function analyze() {
   finally { S.busy = false; setButtons(); }
 }
 async function doExport() {
-  if (!S.plan || S.busy) return; S.busy = true; stop(); setButtons();
+  if (!S.plan || S.busy) return; S.busy = S.exporting = true; stop(); setButtons();
   const [W, H] = outSize(+$('size').value), F = fps(), dur = S.video.dur, t0 = performance.now();
   let res;
   try {
@@ -283,11 +291,16 @@ async function doExport() {
     log(`exported ${W}x${H}@${F} ${res.videoCodec}+${res.audioCodec} ${(res.blob.size / 1e6).toFixed(2)}MB in ${res.seconds.toFixed(1)}s`);
     progress(1, 'export done');
   } catch (e) { log('ERROR export ' + e.message); console.error(e); throw e; }
-  finally { const [pw, ph] = previewSize(); R.setSize(pw, ph); R.setData(S.video, S.plan, fps()); S.busy = false; setButtons(); drawFrame(+$('scrub').value * S.video.dur); }
+  finally {
+    S.busy = S.exporting = false; setButtons();
+    if (S.replanPending) { S.replanPending = false; replan(); }
+    else { const [pw, ph] = previewSize(); R.setSize(pw, ph); R.setData(S.video, S.plan, fps()); drawFrame(+$('scrub').value * S.video.dur); }
+  }
   return res;
 }
 function setButtons() {
   for (const id of ['bAnalyze', 'bExport', 'bAuto', 'bReroll', 'bPlay', 'bFxReset']) $(id).disabled = S.busy || (id !== 'bAnalyze' && !S.plan);
+  for (const id of ['scene', 'seed', 'fps', 'aspect', 'size', 'palette', 'intensity', 'strobe', 'start', 'scrub', 'snapBar', 'bitrate', 'quality']) $(id).disabled = !!S.busy;
   $('bAnalyze').classList.toggle('accent', !S.plan);
   $('bExport').classList.toggle('accent', !!S.plan);
 }
@@ -313,7 +326,7 @@ $('bPlay').onclick = play;
 $('bFxReset').onclick = resetFx;
 const beats = $('beats');
 beats.addEventListener('pointerdown', e => {
-  if (!S.fx || !S.plan || e.button !== 0) return;
+  if (!S.fx || !S.plan || e.button !== 0 || S.exporting) return;
   const p = fxPoint(beats, e), i = fxHit(beats, p.x, p.y);
   if (i < 0) return;
   S.fxSel = i; S.fxDrag = S.fx[i];
@@ -343,7 +356,7 @@ function endFxDrag(e) {
 beats.addEventListener('pointerup', endFxDrag);
 beats.addEventListener('pointercancel', endFxDrag);
 beats.addEventListener('dblclick', e => {
-  if (!S.fx || !S.plan || !S.video) return;
+  if (!S.fx || !S.plan || !S.video || S.exporting) return;
   const p = fxPoint(beats, e);
   if (fxHit(beats, p.x, p.y) >= 0) return;
   const dur = S.video.dur || .001, pad = Math.min(0.05, dur * .05);
@@ -357,7 +370,7 @@ window.addEventListener('keydown', e => {
   if (e.key !== 'Backspace' && e.key !== 'Delete') return;
   const tag = document.activeElement && document.activeElement.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-  if (!S.fx || S.fxSel <= 0 || S.fxSel >= S.fx.length - 1) return;
+  if (!S.fx || S.fxSel <= 0 || S.fxSel >= S.fx.length - 1 || S.exporting) return;
   e.preventDefault();
   S.fx.splice(S.fxSel, 1);
   S.fxSel = -1;
@@ -368,12 +381,22 @@ $('start').onchange = () => S.A && !S.keep && setStart(+$('start').value + .010,
 $('scrub').oninput = () => { if (S.playing) stop(); if (S.video) drawFrame(+$('scrub').value * S.video.dur); drawBeats(); };
 for (const id of ['seed', 'fps', 'aspect', 'size']) $(id).onchange = replan;
 const paletteNotes = {reference: 'red, cream, gold, blue'};
+const sceneNotes = {mix: 'alternates dots with pose-ghost plates', dots: 'the dot looks only', plates: 'pose ghosts on a laser stage'};
+let lastSceneNote = '';
+function showScene() {
+  const off = S.plan && S.plan.runs && S.plan.runs.length && R.stage.need && !R.stage.ok;
+  const note = (S.plan && S.plan.sceneNote) || (off ? 'plates need WebGL features this browser lacks, showing dots' : '');
+  $('sceneHint').textContent = note || sceneNotes[$('scene').value] || '';
+  if (note && note !== lastSceneNote) log('scene: ' + note);
+  lastSceneNote = note || '';
+}
+$('scene').onchange = () => { showScene(); replan(); };
 function showPalette() { $('paletteHint').textContent = paletteNotes[$('palette').value] || ''; }
 $('palette').onchange = () => { showPalette(); replan(); };
 for (const [id, txt] of [['intensity', 'intTxt'], ['strobe', 'strTxt']]) { $(id).oninput = () => $(txt).textContent = (+$(id).value).toFixed(2); $(id).onchange = replan; }
 window.addEventListener('resize', drawWave);
 
 // automation hooks (used by the headless test; harmless otherwise)
-S.api = {analyze, doExport, replan, autoPick, setStart, set: (id, v) => { $(id).value = v; if (id === 'keepAudio') $(id).checked = !!v; },
+S.api = {analyze, doExport, replan, autoPick, setStart, setButtons, set: (id, v) => { $(id).value = v; if (id === 'keepAudio') $(id).checked = !!v; },
   exportBase64: async () => { const r = S.lastExport; const buf = new Uint8Array(await r.blob.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 32768) s += String.fromCharCode.apply(null, buf.subarray(i, i + 32768)); return btoa(s); }};
 log('ready - WebGL2 OK. WebGPU: ' + ('gpu' in navigator ? 'API present' : 'not available (depth will use WASM)') + ', WebCodecs: ' + ('VideoEncoder' in window));

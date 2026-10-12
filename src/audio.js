@@ -83,7 +83,8 @@ export function gridFor(A, startTime, dur, downbeatT) {
   A.beats.forEach((t, k) => { const r = t - startTime; if (r >= -1e-3 && r < dur) { beats.push(Math.max(0, r)); kick.push(A.beatKick[k]); } });
   const db = downbeatT != null ? downbeatT : A.bars.reduce((m, b) => (b.t >= startTime - 1e-3 && (m == null || b.t < m)) ? b.t : m, null);
   const firstBar = beats.findIndex(b => Math.abs(b - (db - startTime)) < .02);
-  return {beats, kick, barOffset: Math.max(0, firstBar), P: A.P};
+  const drops = A.bars.filter(b => b.drop && b.t >= startTime - 1e-3 && b.t < startTime + dur).map(b => b.t - startTime);
+  return {beats, kick, barOffset: Math.max(0, firstBar), P: A.P, drops};
 }
 
 // final mix: slice, fades, rough loudness normalisation (-14 LUFS-ish via RMS), soft limiter

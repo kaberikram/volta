@@ -1,7 +1,8 @@
 // WebGL2 point-cloud renderer: port of clip2_dots_v2 (c3.html) driven by a plan from planner.js.
-import { VS, FS, QV, BRIGHT, BLUR, COMP } from './shaders.js';
+import { VS, FS, QV, BRIGHT, BLUR, COMP, COMP_HDR } from './shaders.js';
+import { Stage, STAGE_PTS } from './stage.js';
 import { effectAt } from './planner.js';
-import { clamp, easeOut, easeIO, hex, hsh } from './util.js';
+import { clamp, easeOut, easeIO, hex, hsh, DEG, FOV0, D0, add, sub, scl, dot, lookAt, persp, mm, rotY, rotX, rotAxis, elastic, snap } from './util.js';
 
 export const LOOKS = {
   led:    {bg: '#1c0604', src: 1, full: 1, rmin: .5},
@@ -21,20 +22,13 @@ export const LOOKS = {
   echoK:  {bg: '#f2e6c9', dot: '#16111b', echo: 1}, echoW: {bg: '#000000', dot: '#ffffff', echo: 1},
   scatter:{bg: '#000000', dot: '#ffffff', grid: .5},
   raw:    {mode: 1},
+  // plates stage looks (rendered by stage.js; every stage parameter lives under st, fallback = dots look if the stage can't run)
+  plates:  {bg: '#06141a', st: {fallback: 'mono', fog: '#06141a', fogD: .11, fogH: 4.5, sky: '#07141a', spot: 1, laser: 1, gridC: '#cfefff', gridK: 1.3}},
+  platesR: {bg: '#160303', st: {fallback: 'mono', fog: '#160303', fogD: .1, fogH: 4.5, sky: '#220404', sky2: '#050101', haze: .7, spot: 1, spotTint: '#ff4a3a', laser: 1.6, gridC: '#ffe2dc', gridK: .8, emis: 1.4}},
+  platesW: {bg: '#1c2428', st: {fallback: 'mono', fog: '#1c2428', fogD: .085, sky: '#26323a', sky2: '#080c0e', haze: .45, spot: 1.3, laser: 1.1, gridK: 1, con: -.04, refl: .85}},
+  platesC: {bg: '#031820', st: {fallback: 'mono', fog: '#031820', fogD: .11, fogH: 4.5, sky: '#05202a', spot: 1.2, laser: 1, red: '#00c6ee', gridK: 1.2}},
+  platesK: {bg: '#000000', st: {fallback: 'mono', fog: '#000000', fogD: .04, sky: '#000000', sky2: '#000000', haze: 0, spot: 0, laser: 0, gridK: 0, hoop: .4, emis: 2, dancerK: .25}},
 };
-const DEG = Math.PI / 180, FOV0 = 40 * DEG, D0 = 1 / Math.tan(FOV0 / 2);
-const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]], sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]], scl = (a, s) => a.map(x => x * s);
-const nrm = a => { const l = Math.hypot(...a); return a.map(x => x / l); };
-const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]], dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-function lookAt(e, c, up) { const f = nrm(sub(c, e)), s = nrm(cross(f, up)), u = cross(s, f); return [s[0], u[0], -f[0], 0, s[1], u[1], -f[1], 0, s[2], u[2], -f[2], 0, -dot(s, e), -dot(u, e), dot(f, e), 1]; }
-function persp(fov, asp, n, f) { const k = 1 / Math.tan(fov / 2); return [k / asp, 0, 0, 0, 0, k, 0, 0, 0, 0, (f + n) / (n - f), -1, 0, 0, 2 * f * n / (n - f), 0]; }
-function mm(a, b) { const o = new Array(16).fill(0); for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) for (let k = 0; k < 4; k++) o[j * 4 + i] += a[k * 4 + i] * b[j * 4 + k]; return o; }
-const rotY = (v, a) => [v[0] * Math.cos(a) + v[2] * Math.sin(a), v[1], -v[0] * Math.sin(a) + v[2] * Math.cos(a)];
-const rotX = (v, a) => [v[0], v[1] * Math.cos(a) - v[2] * Math.sin(a), v[1] * Math.sin(a) + v[2] * Math.cos(a)];
-const rotAxis = (v, k, a) => { const c = Math.cos(a), s = Math.sin(a), kv = cross(k, v), kd = dot(k, v); return [0, 1, 2].map(i => v[i] * c + kv[i] * s + k[i] * kd * (1 - c)); };
-const elastic = (a, tau = .06, per = .2) => a < 0 ? 0 : Math.exp(-a / tau) * Math.cos(2 * Math.PI * a / per);
-const snap = a => a < 0 ? 0 : 1 - Math.exp(-a / .035) * Math.cos(2 * Math.PI * a / .3);
-
 export class DotRenderer {
   constructor(canvas) {
     this.cv = canvas;
@@ -43,7 +37,8 @@ export class DotRenderer {
     const sh = (t, s) => { const x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x); if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(x)); return x; };
     const prog = (v, f) => { const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, v)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, f)); gl.linkProgram(p); if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p)); const u = {}; return {p, U: n => (n in u ? u[n] : (u[n] = gl.getUniformLocation(p, n)))}; };
     this.PD = prog(VS, FS); this.PB = prog(QV, BRIGHT); this.PL = prog(QV, BLUR); this.PC = prog(QV, COMP);
-    gl.bindVertexArray(gl.createVertexArray());
+    this.prog = prog; this.vao0 = gl.createVertexArray(); gl.bindVertexArray(this.vao0);
+    this.stage = new Stage(this);
     this.NS = 5; this.tRaw = []; this.tD = []; this.lr = []; this.ld = [];
     for (let i = 0; i < this.NS; i++) { this.tRaw.push(this.tex(4, 4, gl.LINEAR, true)); this.tD.push(this.tex(4, 4, gl.NEAREST)); this.lr.push(-1); this.ld.push(-1); }
     this.bmpCache = new Map(); this.fps = 30;
@@ -59,13 +54,15 @@ export class DotRenderer {
     this.tDots = this.tex(W, H, gl.LINEAR); this.fDots = this.fbo(this.tDots);
     this.BW = Math.max(8, W >> 2); this.BH = Math.max(8, H >> 2);
     this.tA = this.tex(this.BW, this.BH, gl.LINEAR); this.tB = this.tex(this.BW, this.BH, gl.LINEAR); this.fA = this.fbo(this.tA); this.fB = this.fbo(this.tB);
+    if (this.stage.need) this.stage.resize(W, H);
   }
   setData(video, plan, fps) {
+    if (video !== this.V) { for (const b of this.bmpCache.values()) b.close?.(); this.bmpCache.clear(); }   // frames are cached by index: drop the previous clip's
     this.V = video; this.plan = plan; this.fps = fps; this.lr.fill(-1); this.ld.fill(-1);
     const ef = t => Math.max(0, Math.floor(t * fps + 1e-6)), SF = fps / 30;
     this.ev = plan.sched.map(e => ({f: ef(e.t) + Math.round((e.strobe || 0) * SF), look: e.look, pitch: e.pitch, strobe: !!e.burst})).sort((a, b) => a.f - b.f);
     this.beatF = plan.beats.map(ef); this.barF = plan.barStarts.map(ef);
-    this.flash = plan.flashes.map(x => ({f: ef(x.t), c: hex(x.c), s: Math.min(1, x.s)}));
+    this.flash = plan.flashes.map(x => ({f: ef(x.t) + Math.round((x.step || 0) * SF), c: hex(x.c), s: Math.min(1, x.s), burst: !!x.burst}));
     this.detF = plan.dets.map(ef); this.echoF = plan.echoHits.map(ef);
     this.holds = plan.holds.map(h => ({f0: ef(h.t0), f1: ef(h.t1)}));
     this.fz = plan.freeze ? {...plan.freeze, f0: ef(plan.freeze.t0), f1: ef(plan.freeze.t1)} : null;
@@ -73,6 +70,26 @@ export class DotRenderer {
     this.fly = plan.fly ? {f0: ef(plan.fly.t0), f1: ef(plan.fly.t1)} : null;
     this.swings = plan.swings.map(s => ({...s, f: ef(s.t)})); this.barCam = plan.barCam;
     this.SF = SF;
+    this.stage.build(video, plan, fps);
+    if (this.stage.need && this.stage.ok && this.W) this.stage.resize(this.W, this.H);
+  }
+  /** the schedule entry on screen at frame n (strobes are skipped where the fade lane is quiet) */
+  evAt(n) {
+    const g = effectAt(this.plan.fx, n / this.fps), quiet = g < 0.2;
+    let ev = this.ev[0] || {look: 'led', pitch: 14, strobe: false};
+    for (const e of this.ev) if (e.f <= n && !(quiet && e.strobe)) ev = e;
+    if (quiet && ev.strobe) {
+      let heldLook = null; for (const e of this.ev) if (e.f <= n && !e.strobe) heldLook = e;
+      ev = heldLook || {look: 'led', pitch: ev.pitch || 14, strobe: false};
+    }
+    return ev;
+  }
+  stageOn(n) { const L = LOOKS[this.evAt(n).look]; return !!(L && L.st && this.stage.ok && this.stage.need && this.stage.W && effectAt(this.plan.fx, n / this.fps) >= .01); }
+  /** beat state at frame n (same formulas as camAt) */
+  beatAt(n) {
+    const kb = this.lastIdx(this.beatF, n + 1e-6), ka = kb >= 0 ? (n - this.beatF[kb]) / this.fps : 9;
+    const isBar = this.barF.includes(kb >= 0 ? this.beatF[kb] : -1), kstr = kb >= 0 ? clamp(.45 + (this.plan.kick[kb] || .6), .5, 1.2) : 1;
+    return {kb, ka, isBar, kstr};
   }
   footageF(n) {
     const V = this.V, fz = this.fz;
@@ -132,13 +149,10 @@ export class DotRenderer {
   async renderAt(t) {
     const gl = this.gl, fps = this.fps, W = this.W, H = this.H, V = this.V, I = this.plan.intensity;
     const n = Math.round(t * fps), SF = this.SF, g = effectAt(this.plan.fx, n / fps), quiet = g < 0.2;
-    let ev = this.ev[0] || {look: 'led', pitch: 14, strobe: false};
-    for (const e of this.ev) if (e.f <= n && !(quiet && e.strobe)) ev = e;
-    if (quiet && ev.strobe) {
-      let heldLook = null; for (const e of this.ev) if (e.f <= n && !e.strobe) heldLook = e;
-      ev = heldLook || {look: 'led', pitch: ev.pitch || 14, strobe: false};
-    }
-    const L = LOOKS[ev.look] || LOOKS.led, fi = this.footageF(n);
+    const ev = this.evAt(n);
+    let L = LOOKS[ev.look] || LOOKS.led;
+    if (L.st) { if (this.stageOn(n)) return this.renderStage(n, ev, L, g); L = LOOKS[L.st.fallback] || LOOKS.mono; }
+    const fi = this.footageF(n);
     const lastAge = arr => { let a = 99; for (const f of arr) if (f <= n) a = (n - f) / fps; return a; };
     const held = this.holds.some(h => n >= h.f0 && n < h.f1);
     const cam = this.camAt(n);
@@ -152,7 +166,7 @@ export class DotRenderer {
     if (rf && n >= rf.f0 && n < rf.f1) { det = n < rf.fm ? easeOut((n - rf.f0) / Math.max(1, rf.fm - rf.f0)) * .95 : .95 * (1 - easeIO((n - rf.fm) / Math.max(1, rf.f1 - rf.fm))); detFade = 1; }
     det *= g;
     const fz = this.fz && n >= this.fz.f0 && n < this.fz.f1;
-    let fl = null; for (const x of this.flash) if (n === x.f) fl = {c: x.c, s: x.s}; else if (n > x.f && n <= x.f + SF && !fl) fl = {c: x.c, s: x.s * .25};
+    let fl = null; for (const x of this.flash) { if (quiet && x.burst) continue; if (n === x.f) fl = {c: x.c, s: x.s}; else if (n > x.f && n <= x.f + SF && !fl) fl = {c: x.c, s: x.s * .25}; }
     const echoLook = !!L.echo, echoN = echoLook ? 4 : (echoHit > 0 ? 3 : 0);
     await this.load(0, fi); for (let k = 1; k <= echoN; k++) await this.load(k, fi - 2 * k);
     const scale = Math.min(W, H) / 1080, pitch = Math.max(3, (ev.pitch || 12) * scale), cols = Math.ceil(W / pitch), rows = Math.ceil(H / pitch), N = cols * rows;
@@ -165,7 +179,7 @@ export class DotRenderer {
       const P = this.PD, U = P.U; gl.useProgram(P.p); gl.enable(gl.BLEND);
       gl.uniform1i(U('uR'), 0); gl.uniform1i(U('uD'), 1);
       const bind = k => { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.tRaw[k]); gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.tD[k]); };
-      gl.uniform1f(U('uPitch'), pitch); gl.uniform1f(U('uCols'), cols); gl.uniform2f(U('uRes'), W, H); gl.uniform4fv(U('uCrop'), crop); gl.uniform1f(U('uLod'), lod);
+      gl.uniform1f(U('uPitch'), pitch); gl.uniform1f(U('uCols'), cols); gl.uniform2f(U('uRes'), W, H); gl.uniform2f(U('uCell0'), 0, 0); gl.uniform4fv(U('uCrop'), crop); gl.uniform1f(U('uLod'), lod);
       gl.uniform1f(U('uInk'), L.ink || 0); gl.uniform1f(U('uSrc'), L.src || 0); gl.uniform1f(U('uFull'), L.full || 0); gl.uniform1f(U('uGrid'), L.grid || 0);
       gl.uniform1f(U('uSpark'), L.spark || 0); gl.uniform1f(U('uRmin'), L.rmin || .5); gl.uniform1f(U('uGain'), L.gain || 1); gl.uniform1f(U('uInv'), L.inv || 0);
       gl.uniform3fv(U('uDot'), hex(L.dot || '#ffffff')); gl.uniform3fv(U('uBg'), hex(L.bg || '#000000')); gl.uniform3fv(U('uTint'), [1, 1, 1]);
@@ -216,5 +230,39 @@ export class DotRenderer {
     gl.uniform1f(C.U('uFlash'), fl ? fl.s * g : 0); gl.uniform3fv(C.U('uFlashCol'), fl ? fl.c : [1, 1, 1]);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     return {n, fi, look: ev.look, kick: +kick.toFixed(2), det: +det.toFixed(2), spd: +spd.toFixed(1), freeze: !!fz, held};
+  }
+  /** plates stage frame: stage.js draws the HDR scene, then the stage composite (bloom, tonemap, CA, flash, fade lane). */
+  async renderStage(n, ev, L, g) {
+    const gl = this.gl, fps = this.fps, W = this.W, H = this.H, I = this.plan.intensity, SF = this.SF, st = L.st, fx = g < 0.01 ? 0 : g, quiet = g < 0.2;
+    const fi = this.footageF(n); await this.load(0, fi);
+    const b = this.beatAt(n), held = this.holds.some(h => n >= h.f0 && n < h.f1);
+    const kick = held ? 0 : Math.exp(-b.ka / .05) * Math.min(1.3, I) * g;
+    let fl = null; for (const x of this.flash) { if (quiet && x.burst) continue; if (n === x.f) fl = {c: x.c, s: x.s}; else if (n > x.f && n <= x.f + SF && !fl) fl = {c: x.c, s: x.s * .25}; }
+    const S = this.stage, info = await S.draw(n, {n, g, kick, L, fi});
+    const cam = S.cam, cut = S.isCut(n);
+    let spd = 0, blur = [0, 0];
+    if (!cut && n > 0) {
+      const V0 = S.VP(S.camAt(n - 1)), V1 = S.VP(cam); let sx = 0, sy = 0, m = 0;
+      for (const o of STAGE_PTS) { const p = [cam.T[0] + o[0], o[1], cam.T[2] + o[2]];
+        const pr = V => { const x = V[0] * p[0] + V[4] * p[1] + V[8] * p[2] + V[12], y = V[1] * p[0] + V[5] * p[1] + V[9] * p[2] + V[13], w = V[3] * p[0] + V[7] * p[1] + V[11] * p[2] + V[15]; return [x / w, y / w, w]; };
+        const a = pr(V0), c = pr(V1); if (a[2] > .05 && c[2] > .05) { sx += (c[0] - a[0]) / 2; sy += (c[1] - a[1]) / 2; m++; } }
+      if (m) { sx /= m; sy /= m; spd = Math.hypot(sx * W, sy * H) * (1080 / H); const l = Math.hypot(sx, sy), k = l * W > 4 ? Math.min(1, .04 / Math.max(l, 1e-6)) * .5 : 0; blur = [sx * k, sy * k]; }
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, W, H); gl.disable(gl.BLEND);
+    const C = S.PCH, U = C.U; gl.useProgram(C.p); gl.bindVertexArray(this.vao0);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, S.tStage); gl.uniform1i(U('uDots'), 0);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.tRaw[0]); gl.uniform1i(U('uR'), 1);
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, S.tSA); gl.uniform1i(U('uBl'), 2);
+    const detAge = (() => { let a = 99; for (const f of this.detF) if (f <= n) a = (n - f) / fps; return a; })();
+    const recoil = detAge < .3 ? Math.exp(-detAge / .06) : 0, shk = .5 * ((b.isBar ? 10 : 5) * kick + 26 * recoil * I * g) * W / 1440, kbs = b.kb * 7 + (detAge < .3 ? Math.round(detAge * fps) : 0);
+    gl.uniform4fv(U('uCrop'), this.crop(fi)); gl.uniform2f(U('uRes'), W, H); gl.uniform1f(U('uFx'), fx);
+    gl.uniform2f(U('uShake'), shk * (hsh(kbs * 3.1) - .5) * 2 / W, shk * (hsh(kbs * 5.7) - .5) * 2 / H); gl.uniform2f(U('uBlurV'), blur[0], blur[1]);
+    gl.uniform1f(U('uCA'), .5 * ((b.isBar ? 22 : 12) * kick + (14 * recoil + Math.min(10, spd * .25)) * g) * W / 1440);
+    gl.uniform1f(U('uCon'), 1.1 + .2 * kick + (st.con || 0)); gl.uniform1f(U('uBloom'), .55 * (1 + .6 * kick) * (st.bloom ?? 1));
+    gl.uniform1f(U('uExp'), st.exp ?? 1); gl.uniform1f(U('uTone'), S.hdr ? 1 : 0); gl.uniform1f(U('uN'), n);
+    gl.uniform1f(U('uFlash'), fl ? fl.s * g * .6 : 0); gl.uniform3fv(U('uFlashCol'), fl ? fl.c : [1, 1, 1]);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.activeTexture(gl.TEXTURE0);
+    return {n, fi, look: ev.look, kick: +kick.toFixed(2), det: 0, spd: +spd.toFixed(1), freeze: false, held, stage: true, cut, dancerPts: S.dancerPts, ...info};
   }
 }

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Volta render harness</title>
+<style>
+  html, body { margin: 0; background: #111; color: #ccc; font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; }
+  #view { display: block; max-width: 100%; height: auto; background: #000; }
+  #status { padding: 6px 8px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<!-- Synthetic render harness: test/harness.js builds a fake analysis bundle (test/synth.js), a plan and a DotRenderer,
+     and exposes window.H for test/plates_e2e.mjs. Open it by hand too: /test/plates.html then H.init() / H.png(3). -->
+<canvas id="view" width="16" height="16"></canvas>
+<div id="status">loading…</div>
+<script type="module" src="./harness.js"></script>
+</body>
+</html>
