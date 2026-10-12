@@ -18,7 +18,7 @@ const STAGE_PAL = {
   mono: {stage: ['platesW', 'plates'], mats: {hit: ['whiteHot']}, strobe: ['#ffffff', '#ffffff']},
 };
 export const stagePal = name => { const r = STAGE_PAL.reference, p = STAGE_PAL[name] || r; return {stage: p.stage || r.stage, strobe: p.strobe || r.strobe, mats: {...r.mats, ...(p.mats || {})}}; };
-export const GHOST = {cap: 14, keep: 8, life: 10, collapse: .6, build: .16, max: 96};
+export const GHOST = {cap: 14, keep: 8, life: 10, collapse: .6, build: .16, max: Infinity};   // live ghosts are bounded by cap / keep / life
 const GLASS = new Set(['redGlass', 'smokeGlass', 'cyanGlass']);
 export const SCENES = ['mix', 'dots', 'plates'];
 
@@ -86,8 +86,11 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
   if (scene === 'dots') return DOTS(plan, 'dots');
   const {seed, dur, P, beats, palette} = plan, nb = beats.length;
   if (!video || !video.dm || !video.dm.length) return DOTS(plan, 'dots', 'plates need the video analysis');
-  const st = poseStats(video);
-  if (!st.some(s => s.ok)) return DOTS(plan, 'dots', 'no person found, so dots only');
+  // a pose can be printed when the person is found and covers >= 1% of the frame (video.js tracks the pivot from there)
+  const st = poseStats(video), vis = st.map((s, k) => s.ok && (video.area[k] || 0) >= .01);
+  const nOk = st.filter(s => s.ok).length, nVis = vis.filter(Boolean).length;
+  if (!nOk) return DOTS(plan, 'dots', 'no person found, so dots only');
+  if (nVis < Math.max(3, .3 * nOk)) return DOTS(plan, 'dots', 'the dancer is too small in frame for plates, so dots only');
   if (nb < 4 || !NBar) return DOTS(plan, 'dots', 'not enough beats for plates');
   const fit = stageFit(video);
   if (scene === 'mix' && fit.cutFrac > .6) return DOTS(plan, 'dots', 'feet are out of frame in most shots, so dots only');
@@ -101,7 +104,8 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
   const stages = Array(NBar).fill('D'); let note = '';
   if (scene === 'plates') stages.fill('P');
   else {
-    const E = new Set(); for (let i = 1; i <= NBar - 2; i++) if (!['freeze', 'echo'].includes(role[i])) E.add(i);
+    const visBar = i => { let a = 0, c = 0; for (let f = Math.floor(barT(i) * fps); f < Math.min(nf, Math.ceil(barEnd(i) * fps)); f += video.step) { a += vis[Math.min(vis.length - 1, Math.floor(f / video.step))]; c++; } return c && a / c >= .5; };
+    const E = new Set(); for (let i = 1; i <= NBar - 2; i++) if (!['freeze', 'echo'].includes(role[i]) && visBar(i)) E.add(i);
     if (!E.size && NBar >= 3) { const f = role.indexOf('freeze'); if (f > 0 && f < NBar - 1) E.add(f); }
     if (NBar <= 2 || !E.size) note = 'the clip is too short for a plates section';
     else {
@@ -224,7 +228,7 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
   const phi0 = RS() * 6.283;
   const mkGhost = (c, i, seeded) => {
     const s0 = sf(c.t); let best = -1, bs = -1e9;
-    for (let f = Math.max(0, s0 - 3); f <= Math.min(nf - 1, s0 + 1); f++) { const k = Math.min(st.length - 1, Math.floor(f / step)), s2 = st[k]; if (!s2.ok || area[k] < .01) continue;
+    for (let f = Math.max(0, s0 - 3); f <= Math.min(nf - 1, s0 + 1); f++) { const k = Math.min(st.length - 1, Math.floor(f / step)), s2 = st[k]; if (!vis[k]) continue;
       const sc = .6 * area[k] / amax + .4 * s2.desc[s2.desc.length - 1] - .3 * Math.min(1, env[f] / 2); if (sc > bs) { bs = sc; best = f; } }
     return best;
   };
@@ -256,12 +260,11 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
   if (scene === 'plates') {        // pre-seed a ring so a plates-only edit opens on a populated stage
     const qs = [.2, .4, .6, .8], used = [];
     qs.forEach((q, n) => { let best = -1, ba = -1; const c0 = Math.floor(q * nf);
-      for (let f = Math.max(0, c0 - 30); f < Math.min(nf, c0 + 30); f++) { const k = Math.min(st.length - 1, Math.floor(f / step)); if (!st[k].ok) continue;
+      for (let f = Math.max(0, c0 - 30); f < Math.min(nf, c0 + 30); f++) { const k = Math.min(st.length - 1, Math.floor(f / step)); if (!vis[k]) continue;
         if (used.some(u => descDist(st[u].desc, st[k].desc) < .08)) continue; if (area[k] > ba) { ba = area[k]; best = f; } }
       if (best >= 0) { used.push(Math.min(st.length - 1, Math.floor(best / step))); addGhost({t: -1.5 - (qs.length - n) * P, beat: 0, move: 0, down: 0, forced: false}, best, true); } });
   }
   for (const c of chosen) {
-    if (ghosts.length >= GHOST.max) break;
     const f = mkGhost(c); if (f < 0) continue;
     const k = Math.min(st.length - 1, Math.floor(f / step));
     const novel = !lastDesc || descDist(st[k].desc, lastDesc) >= .08;
