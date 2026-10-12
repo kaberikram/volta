@@ -206,6 +206,19 @@ async function uiCheck(browser, origin) {
       check(band.inside > 300 && (band.outside == null || band.outside < band.inside / 2), `UI: plates runs marked on the beat lane (${val})`, JSON.stringify(band));
     }
   }
+  // the beat lane: a double-click adds a fade key (no seek), a click on the time ruler seeks; Space plays / pauses
+  const lane = await page.locator('#beats').boundingBox();
+  const k0 = await page.evaluate(() => ({keys: window.dotfx.fx.length, scrub: +document.getElementById('scrub').value, playing: window.dotfx.playing}));
+  await page.mouse.dblclick(lane.x + lane.width * .37, lane.y + lane.height * .55); await page.waitForTimeout(300);
+  const k1 = await page.evaluate(() => ({keys: window.dotfx.fx.length, scrub: +document.getElementById('scrub').value, playing: window.dotfx.playing}));
+  check(k1.keys === k0.keys + 1 && k1.scrub === k0.scrub && !k1.playing, 'UI: double-click on the lane adds a fade key without seeking', JSON.stringify({k0, k1}));
+  await page.mouse.click(lane.x + lane.width * .8, lane.y + 6); await page.waitForTimeout(300);
+  const k2 = await page.evaluate(() => ({keys: window.dotfx.fx.length, scrub: +document.getElementById('scrub').value}));
+  check(Math.abs(k2.scrub - .8) < .02 && k2.keys === k1.keys, 'UI: a click on the time ruler seeks', JSON.stringify(k2));
+  await page.evaluate(() => { window.dotfx.api.setButtons(); document.activeElement && document.activeElement.blur && document.activeElement.blur(); });     // (state was injected, not analysed)
+  await page.keyboard.press('Space'); await page.waitForTimeout(400); const sp1 = await page.evaluate(() => window.dotfx.playing);
+  await page.keyboard.press('Space'); await page.waitForTimeout(200); const sp2 = await page.evaluate(() => window.dotfx.playing);
+  check(sp1 && !sp2, 'UI: Space plays and pauses', JSON.stringify({sp1, sp2}));
   const lock = await page.evaluate(() => { const S = window.dotfx; S.busy = S.exporting = true; S.api.setButtons(); const on = document.getElementById('scene').disabled && document.getElementById('scrub').disabled;
     S.api.replan(); const deferred = !!S.replanPending; S.busy = S.exporting = false; S.replanPending = false; S.api.setButtons(); return {on, deferred, off: !document.getElementById('scene').disabled}; });
   check(lock.on && lock.deferred && lock.off, 'UI: edit controls lock during an export and re-planning waits for it', JSON.stringify(lock));

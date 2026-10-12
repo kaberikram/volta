@@ -38,9 +38,8 @@
     <p id="clipName">No clip</p>
     <p id="outTxt">1080p · 60 fps</p>
     <div class="bar-actions">
-      <p id="recTxt" hidden></p>
       <a id="dl" class="dl" style="display:none">Download</a>
-      <button type="button" id="bExport">Export</button>
+      <button type="button" id="bExport" class="vid-only">Export</button>
     </div>
   </header>
 
@@ -88,8 +87,8 @@
 
   <section class="viewer" id="stage">
     <canvas id="view"></canvas>
-    <p class="empty">Drop a clip and a song. <span>Volta locks the edit to the beat.</span></p>
-    <p id="countTxt" hidden></p>
+    <p class="empty vid-only">Drop a clip and a song. <span>Volta locks the edit to the beat.</span></p>
+    <p class="empty cam-only" id="camEmpty">Pick a song, then go live. <span>Scrub anywhere and change any setting while you dance.</span></p>
     <div id="prog" hidden><div id="bar"></div><span id="progTxt">idle</span></div>
   </section>
 
@@ -196,7 +195,7 @@
         <span>Snap to bars</span>
       </label>
       <button type="button" id="bAuto" class="vid-only">Auto-pick</button>
-      <span id="fxHint">Double-click the beat lane to fade back to the clip.</span>
+      <span id="fxHint">Double-click the lane to fade the effect back. Click the ruler to seek, Space to play.</span>
       <button type="button" id="bFxReset">Reset fade</button>
       <p id="audioInfo" class="info"></p>
     </div>

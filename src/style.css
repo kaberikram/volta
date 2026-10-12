@@ -605,24 +605,7 @@ body[data-src="cam"] #start { display: none; }
   font-size: 12px;
 }
 .cam-well[data-on] #camOff { display: none; }
-#countTxt {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  margin: 0;
-  color: var(--accent);
-  font-family: var(--font-display);
-  font-size: 6rem;
-  font-weight: 600;
-  letter-spacing: -0.04em;
-  pointer-events: none;
-}
-#countTxt[hidden] { display: none; }
-#recTxt {
-  margin: 0;
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-}
+/* webcam: the viewer shows the live picture only while live; the clip's export link stays for the way back */
+body[data-src="cam"]:not([data-live]) #view { opacity: 0; }
+body[data-src="cam"]:not([data-live]) #camEmpty { display: flex; }
+body[data-src="cam"] #dl { display: none !important; }
