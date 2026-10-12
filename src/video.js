@@ -2,9 +2,9 @@
 // person segmentation (MediaPipe selfie-multiclass, depth-based fallback), motion, smoothing, pivots, cache.
 import { clamp, gaussSmooth, fillNaN, cacheGet, cachePut } from './util.js';
 const TJS = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5';
-const MPV = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304';
-const POSE_MODEL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task';
-const SEG_MODEL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
+export const MPV = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304';
+export const POSE_MODEL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task';
+export const SEG_MODEL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
 
 export function loadVideoEl(file) {
   return new Promise((res, rej) => {
@@ -39,11 +39,14 @@ async function getDepth(log) {
 // Person mask. Primary: MediaPipe PoseLandmarker segmentation (detects full bodies at any distance, empty when nobody is in
 // frame). Fallback: selfie-multiclass ImageSegmenter (good for close-ups, can over-segment wide shots). Last resort: depth threshold.
 // Every variant returns a function imgData -> Float32Array person probability at the image resolution.
-const resample = (src, mw, mh, aw, ah, out, add) => { for (let y = 0; y < ah; y++) for (let x = 0; x < aw; x++) { const v = src[Math.min(mh - 1, Math.floor(y * mh / ah)) * mw + Math.min(mw - 1, Math.floor(x * mw / aw))]; out[y * aw + x] = add ? Math.max(out[y * aw + x], v) : v; } };
+export const resample = (src, mw, mh, aw, ah, out, add) => { for (let y = 0; y < ah; y++) for (let x = 0; x < aw; x++) { const v = src[Math.min(mh - 1, Math.floor(y * mh / ah)) * mw + Math.min(mw - 1, Math.floor(x * mw / aw))]; out[y * aw + x] = add ? Math.max(out[y * aw + x], v) : v; } };
+/** MediaPipe tasks-vision module + wasm fileset (loaded once, shared by the clip analysis and the live webcam mode). */
+let vision = null;
+export async function loadVision() { if (!vision) vision = (async () => { const V = await import(`${MPV}/+esm`); return {V, fs: await V.FilesetResolver.forVisionTasks(`${MPV}/wasm`)}; })(); try { return await vision; } catch (e) { vision = null; throw e; } }
 async function getSegmenter(log) {
   if (segmenter !== null) return segmenter;
   let V, fs;
-  try { V = await import(`${MPV}/+esm`); fs = await V.FilesetResolver.forVisionTasks(`${MPV}/wasm`); }
+  try { ({V, fs} = await loadVision()); }
   catch (e) { log('segmentation unavailable: ' + e.message); segmenter = false; segInfo = 'depth-threshold fallback'; return false; }
   const img = new ImageData(266, 196); for (let i = 0; i < img.data.length; i++) img.data[i] = (i * 37) & 255;
   // 1) pose landmarker (GPU delegate only: its CPU path aborts in current tasks-vision builds when masks are requested)

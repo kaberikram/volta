@@ -17,7 +17,7 @@ export const MATS = {
   cyanGlass:  {alb: '#00c6ee', emi: '#00c6ee', ek: .8, spec: '#ffffff', gloss: 80, rim: '#9fe8ff', rk: .5, metal: 0, glass: 1, body: .12},
 };
 const C = {cyan: hex('#47d4ff'), white: hex('#eaf6ff'), red: hex('#ff2414'), pillarW: hex('#e8f6ff'), hoop: hex('#dffbff'), key: hex('#9fdcea')};
-const MAXB = 320, HOOP_SEG = 48, HOOP_H = [.04, .95, 1.95];
+const MAXB = 320, HOOP_SEG = 48, HOOP_H = [.04, .95, 1.95], LIVE_SLOTS = 32, LIVE_SLABS = 160;
 const STAGE_PTS = [[-2, 1, 0], [2, 1, 0], [0, 1, -2], [0, 0, 2], [3, 2, 3]];
 const diagM = [1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 // column-major affine helpers
@@ -124,23 +124,37 @@ export class Stage {
     if (!this.need) { this.release(); return; }
     if (!this.ensure()) return;
     const gl = this.gl, fit = this.fit = stageFit(V), segs = new Map(), parts = []; let off = 0;
-    this.cut = poseStats(V).map(s => !!(s.ok && s.cut));
-    this.gseg = plan.ghosts.map(g => {
-      const key = g.di + '|' + g.style;
-      if (!segs.has(key)) { const sb = slabBase(V, g.di, g.style); segs.set(key, {off, cnt: sb.count}); parts.push(sb.inst); off += sb.count; }
-      return segs.get(key);
-    });
-    const all = new Float32Array(Math.max(8, off * 8)); let o = 0; for (const p of parts) { all.set(p, o); o += p.length; }
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.bInst); gl.bufferData(gl.ARRAY_BUFFER, all, gl.STATIC_DRAW); gl.bindBuffer(gl.ARRAY_BUFFER, null);
-    const nF = Math.ceil(plan.dur * fps) + 2, di = n => Math.min(fit.dpos.length - 1, Math.floor(this.r.footageF(clamp(n, 0, nF)) / V.step));
-    const xs = [], zs = []; for (let n = 0; n < nF; n++) { const p = fit.dpos[di(n)]; xs.push(p[0]); zs.push(p[2]); }
-    const sx = gaussSmooth(xs, .3 * fps), sz = gaussSmooth(zs, .3 * fps);
-    this.dposT = sx.map((x, i) => [x, 0, sz[i]]);
+    if (V.live) {                     // live: ghosts arrive during the take, each in a fixed slot of a preallocated buffer
+      this.cut = V.cut; this.gseg = []; this.dposT = null;
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.bInst); gl.bufferData(gl.ARRAY_BUFFER, LIVE_SLOTS * LIVE_SLABS * 32, gl.DYNAMIC_DRAW); gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    } else {
+      this.cut = poseStats(V).map(s => !!(s.ok && s.cut));
+      this.gseg = plan.ghosts.map(g => {
+        const key = g.di + '|' + g.style;
+        if (!segs.has(key)) { const sb = slabBase(V, g.di, g.style); segs.set(key, {off, cnt: sb.count}); parts.push(sb.inst); off += sb.count; }
+        return segs.get(key);
+      });
+      const all = new Float32Array(Math.max(8, off * 8)); let o = 0; for (const p of parts) { all.set(p, o); o += p.length; }
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.bInst); gl.bufferData(gl.ARRAY_BUFFER, all, gl.STATIC_DRAW); gl.bindBuffer(gl.ARRAY_BUFFER, null);
+      const nF = Math.ceil(plan.dur * fps) + 2, di = n => Math.min(fit.dpos.length - 1, Math.floor(this.r.footageF(clamp(n, 0, nF)) / V.step));
+      const xs = [], zs = []; for (let n = 0; n < nF; n++) { const p = fit.dpos[di(n)]; xs.push(p[0]); zs.push(p[2]); }
+      const sx = gaussSmooth(xs, .3 * fps), sz = gaussSmooth(zs, .3 * fps);
+      this.dposT = sx.map((x, i) => [x, 0, sz[i]]);
+    }
     const ef = t => Math.max(0, Math.floor(t * fps + 1e-6));
     const runEnd = t => { const r = plan.runs.find(r => t >= r.t0 - 1e-6 && t < r.t1); return r ? r.t1 : plan.dur; };
     this.shots = plan.shots.map((s, i) => { const nx = plan.shots[i + 1], t1 = Math.min(nx ? nx.t : plan.dur, runEnd(s.t)); return {...s, f: ef(s.t), t1: Math.max(s.t + .05, t1)}; });
     this.barF = plan.barStarts.map(ef);
   }
+  /** a ghost printed during a live take: its slabs go into slot i % 32 (the cap and the collapse keep slots from clashing) */
+  addGhostLive(g, inst, count) {
+    if (!this.ok || !this.V || !this.V.live) return;
+    const gl = this.gl, slot = g.i % LIVE_SLOTS, cnt = Math.min(count, LIVE_SLABS);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.bInst); gl.bufferSubData(gl.ARRAY_BUFFER, slot * LIVE_SLABS * 32, inst.subarray(0, cnt * 8)); gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    this.gseg[g.i] = {off: slot * LIVE_SLABS, cnt};
+  }
+  /** camera target: smoothed dancer position (precomputed offline, a causal per-frame track live) */
+  dposAt(n) { if (this.V.live) { const a = this.V.dposS; return a[clamp(this.r.footageF(n), 0, a.length - 1)] || [0, 0, 0]; } return this.dposT[clamp(n, 0, this.dposT.length - 1)]; }
   dancerAt(n) { const fi = this.r.footageF(n), k = Math.min(this.fit.dpos.length - 1, Math.floor(fi / this.V.step)); return {k, fi, pos: this.fit.dpos[k]}; }
   shotIdx(n) { const s = this.shots; let k = 0; for (let i = 0; i < s.length; i++) if (s[i].f <= n) k = i; return k; }
   isCut(n) { return n > 0 && (this.shotIdx(n) !== this.shotIdx(n - 1) || this.r.stageOn(n) !== this.r.stageOn(n - 1)); }
@@ -148,7 +162,7 @@ export class Stage {
   camAt(n) {
     const r = this.r, fps = this.fps, t = n / fps, plan = this.plan, si = this.shotIdx(n), S = this.shots[si] || {kind: 'orbit', az: 0, r: 1, h: 1, sgn: 1, t: 0, t1: 1, f: 0};
     const u = clamp((t - S.t) / Math.max(.05, S.t1 - S.t)), g = effectAt(plan.fx, t), I = plan.intensity;
-    const dp = this.dposT[clamp(n, 0, this.dposT.length - 1)], T = [dp[0], .95, dp[2]];
+    const dp = this.dposAt(n), T = [dp[0], .95, dp[2]];
     // narrow (9:16) frames: pull back, widen the lens, raise orbits and keep tracked framing near the centre
     const asp = r.W / r.H, narrow = asp < 1, port = narrow ? Math.min(1.4, 1 / Math.sqrt(asp)) : 1, lat = Math.min(1, asp * 9 / 16);
     const portO = narrow ? Math.min(1.7, Math.pow(1 / asp, .8)) : 1;             // orbits pull back further so the ring fits a tall frame

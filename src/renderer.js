@@ -41,6 +41,7 @@ export class DotRenderer {
     this.stage = new Stage(this);
     this.NS = 5; this.tRaw = []; this.tD = []; this.lr = []; this.ld = [];
     for (let i = 0; i < this.NS; i++) { this.tRaw.push(this.tex(4, 4, gl.LINEAR, true)); this.tD.push(this.tex(4, 4, gl.NEAREST)); this.lr.push(-1); this.ld.push(-1); }
+    this.tRaw0 = this.tRaw.slice(); this.tD0 = this.tD.slice(); this.pool = null;
     this.bmpCache = new Map(); this.fps = 30;
   }
   tex(w, h, filt, mip) { const gl = this.gl, t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
@@ -57,7 +58,8 @@ export class DotRenderer {
     if (this.stage.need) this.stage.resize(W, H);
   }
   setData(video, plan, fps) {
-    if (video !== this.V) { for (const b of this.bmpCache.values()) b.close?.(); this.bmpCache.clear(); }   // frames are cached by index: drop the previous clip's
+    const newClip = video !== this.V;
+    if (newClip) { for (const b of this.bmpCache.values()) b.close?.(); this.bmpCache.clear(); }   // frames are cached by index: drop the previous clip's
     this.V = video; this.plan = plan; this.fps = fps; this.lr.fill(-1); this.ld.fill(-1);
     const ef = t => Math.max(0, Math.floor(t * fps + 1e-6)), SF = fps / 30;
     this.ev = plan.sched.map(e => ({f: ef(e.t) + Math.round((e.strobe || 0) * SF), look: e.look, pitch: e.pitch, strobe: !!e.burst})).sort((a, b) => a.f - b.f);
@@ -70,6 +72,7 @@ export class DotRenderer {
     this.fly = plan.fly ? {f0: ef(plan.fly.t0), f1: ef(plan.fly.t1)} : null;
     this.swings = plan.swings.map(s => ({...s, f: ef(s.t)})); this.barCam = plan.barCam;
     this.SF = SF;
+    if (video && video.live) this.livePool(newClip); else { this.tRaw = this.tRaw0.slice(); this.tD = this.tD0.slice(); }
     this.stage.build(video, plan, fps);
     if (this.stage.need && this.stage.ok && this.W) this.stage.resize(this.W, this.H);
   }
@@ -142,7 +145,29 @@ export class DotRenderer {
     return m ? s / m * (1080 / H) : 0; }
   async bitmap(fi) { if (this.bmpCache.has(fi)) return this.bmpCache.get(fi); const b = await createImageBitmap(this.V.frames[fi]); this.bmpCache.set(fi, b);
     if (this.bmpCache.size > 24) { const k = this.bmpCache.keys().next().value; this.bmpCache.get(k).close?.(); this.bmpCache.delete(k); } return b; }
-  async load(slot, fi) { const gl = this.gl, V = this.V; fi = clamp(fi, 0, V.n - 1); const di = Math.min(V.dm.length - 1, Math.floor(fi / V.step));
+  // ---- live (webcam): every captured frame is uploaded once into a pool of GPU textures; load() just points at them
+  livePool(reset) {
+    const gl = this.gl, N = 16;
+    if (!this.pool) { this.pool = {slots: [], map: new Map(), next: 0}; for (let i = 0; i < N; i++) this.pool.slots.push({raw: this.tex(4, 4, gl.LINEAR, true), d: this.tex(4, 4, gl.NEAREST), fi: -1}); }
+    if (reset) { this.pool.map.clear(); this.pool.next = 0; for (const s of this.pool.slots) s.fi = -1; }
+    // frames the edit shows later (freeze, holds) stay pinned until their window has passed
+    this.pins = new Map(); if (this.fz) this.pins.set(this.fz.frame, this.fz.f1);
+    for (const h of this.holds) this.pins.set(Math.floor(h.f0 / this.fps * 30), h.f1);
+  }
+  pushLiveFrame(fi, src, dm, fromFi = fi) {
+    const gl = this.gl, P = this.pool, V = this.V; let s = null;
+    for (let k = 0; k < P.slots.length && !s; k++) { const c = P.slots[(P.next + k) % P.slots.length]; if (!((this.pins.get(c.fi) ?? -1) > fi)) { s = c; P.next = (P.next + k + 1) % P.slots.length; } }
+    if (!s) { s = P.slots[P.next]; P.next = (P.next + 1) % P.slots.length; }
+    for (const [k, v] of P.map) if (v === s) P.map.delete(k);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, s.raw); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src); gl.generateMipmap(gl.TEXTURE_2D);
+    gl.bindTexture(gl.TEXTURE_2D, s.d); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, V.aw, V.ah, 0, gl.RGBA, gl.UNSIGNED_BYTE, dm);
+    s.fi = fi; for (let i = Math.max(0, fromFi); i <= fi; i++) P.map.set(i, s);
+  }
+  liveFrame(fi) { const P = this.pool; for (let i = clamp(fi, 0, this.V.n - 1); i >= Math.max(0, fi - 48); i--) { const s = P.map.get(i); if (s) return s; } let best = null; for (const s of P.slots) if (s.fi >= 0 && (!best || s.fi > best.fi)) best = s; return best; }
+  async load(slot, fi) { const gl = this.gl, V = this.V;
+    if (V.live) { const s = this.liveFrame(fi); if (s) { this.tRaw[slot] = s.raw; this.tD[slot] = s.d; } return; }
+    fi = clamp(fi, 0, V.n - 1); const di = Math.min(V.dm.length - 1, Math.floor(fi / V.step));
     if (this.lr[slot] !== fi) { const b = await this.bitmap(fi); gl.bindTexture(gl.TEXTURE_2D, this.tRaw[slot]); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, b); gl.generateMipmap(gl.TEXTURE_2D); this.lr[slot] = fi; }
     if (this.ld[slot] !== di) { gl.bindTexture(gl.TEXTURE_2D, this.tD[slot]); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, V.aw, V.ah, 0, gl.RGBA, gl.UNSIGNED_BYTE, V.dm[di]); this.ld[slot] = di; } }
 

@@ -26,7 +26,7 @@ export const SCENES = ['mix', 'dots', 'plates'];
  * grid: {beats:[t...], kick:[...], barOffset, P}; dur: output duration; video: analysis bundle (area per frame)
  * returns plan: {sched:[{t,look,pitch,strobe}], beats, bars, flashes, dets, echoHits, holds, freeze, reform, fly, swings, barCam, params}
  */
-export function makePlan(grid, dur, video, {seed = 1, intensity = 1, strobe = .7, palette = 'reference', scene = 'mix'} = {}) {
+export function makePlan(grid, dur, video, {seed = 1, intensity = 1, strobe = .7, palette = 'reference', scene = 'mix', live = false} = {}) {
   const R = rng(seed * 9973 + 17), pal = PALETTES[palette] || PALETTES.reference, P = grid.P;
   const beats = grid.beats.slice(), nb = beats.length;
   const bt = b => { const k = Math.floor(b), f = b - k; const t0 = k < nb ? beats[k] : beats[nb - 1] + (k - nb + 1) * P; return t0 + f * P; };
@@ -76,34 +76,38 @@ export function makePlan(grid, dur, video, {seed = 1, intensity = 1, strobe = .7
   if (freeze && video) { const f0 = Math.floor(freeze.t0 * video.fps); let best = f0, ba = -1;
     for (let f = Math.max(0, f0 - 8); f <= Math.min(video.n - 1, f0); f++) { const a = video.area[Math.floor(f / video.step)] || 0; if (a > ba) { ba = a; best = f; } } freeze.frame = best; }
   const plan = {seed, intensity, strobe, palette, dur, P, beats, kick: grid.kick, barStarts: barStarts.map(k => beats[k]), roles: role, sched, flashes, dets, echoHits, holds, freeze, reform, fly, swings, barCam};
-  return addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene: SCENES.includes(scene) ? scene : 'mix'});
+  return addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene: SCENES.includes(scene) ? scene : 'mix', live});
 }
 
 const DOTS = (plan, scene, note) => Object.assign(plan, {scene, sceneNote: note || '', stages: plan.roles.map(() => 'D'), runs: [], stageBars: [], shots: [], ghosts: [], orbit: null});
 
 /** Stage layer: carves plates runs out of the dots edit and plans the pose ghosts. Own RNG streams, so 'dots' is untouched. */
-function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
+function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene, live}) {
   if (scene === 'dots') return DOTS(plan, 'dots');
   const {seed, dur, P, beats, palette} = plan, nb = beats.length;
-  if (!video || !video.dm || !video.dm.length) return DOTS(plan, 'dots', 'plates need the video analysis');
+  // live (webcam): the video doesn't exist yet, so plates runs, looks and shots come from the music; ghosts and the
+  // orbit are filled in by the live director as the take runs
+  if (!live && (!video || !video.dm || !video.dm.length)) return DOTS(plan, 'dots', 'plates need the video analysis');
   // a pose can be printed when the person is found and covers >= 1% of the frame (video.js tracks the pivot from there)
-  const st = poseStats(video), vis = st.map((s, k) => s.ok && (video.area[k] || 0) >= .01);
-  const nOk = st.filter(s => s.ok).length, nVis = vis.filter(Boolean).length;
-  if (!nOk) return DOTS(plan, 'dots', 'no person found, so dots only');
-  if (nVis < Math.max(3, .3 * nOk)) return DOTS(plan, 'dots', 'the dancer is too small in frame for plates, so dots only');
+  const st = live ? [] : poseStats(video), vis = live ? [] : st.map((s, k) => s.ok && (video.area[k] || 0) >= .01);
+  if (!live) {
+    const nOk = st.filter(s => s.ok).length, nVis = vis.filter(Boolean).length;
+    if (!nOk) return DOTS(plan, 'dots', 'no person found, so dots only');
+    if (nVis < Math.max(3, .3 * nOk)) return DOTS(plan, 'dots', 'the dancer is too small in frame for plates, so dots only');
+  }
   if (nb < 4 || !NBar) return DOTS(plan, 'dots', 'not enough beats for plates');
-  const fit = stageFit(video);
-  const RS = rng(seed * 7919 + 101), RC = rng(seed * 7919 + 202), sp = stagePal(palette), env = motionEnv(video);
-  const fps = video.fps, nf = video.n;
+  const fit = live ? null : stageFit(video);
+  const RS = rng(seed * 7919 + 101), RC = rng(seed * 7919 + 202), sp = stagePal(palette), env = live ? null : motionEnv(video);
+  const fps = live ? 30 : video.fps, nf = live ? Math.ceil(dur * 30) + 1 : video.n;
   const barT = i => i < NBar ? bt(barStarts[i]) : dur;
   const barEnd = i => i + 1 < NBar ? bt(barStarts[i + 1]) : dur;
   const kickAt = k => grid.kick && grid.kick[k] != null ? grid.kick[k] : .6;
-  const envMean = (t0, t1) => { let s = 0, c = 0; for (let f = Math.max(0, Math.floor(t0 * fps)); f < Math.min(nf, Math.ceil(t1 * fps)); f++) { s += env[f]; c++; } return c ? s / c : 0; };
+  const envMean = (t0, t1) => { if (live) return 0; let s = 0, c = 0; for (let f = Math.max(0, Math.floor(t0 * fps)); f < Math.min(nf, Math.ceil(t1 * fps)); f++) { s += env[f]; c++; } return c ? s / c : 0; };
   // --- which bars are plates
   const stages = Array(NBar).fill('D'); let note = '';
   if (scene === 'plates') stages.fill('P');
   else {
-    const visBar = i => { let a = 0, c = 0; for (let f = Math.floor(barT(i) * fps); f < Math.min(nf, Math.ceil(barEnd(i) * fps)); f += video.step) { a += vis[Math.min(vis.length - 1, Math.floor(f / video.step))]; c++; } return c && a / c >= .5; };
+    const visBar = i => { if (live) return true; let a = 0, c = 0; for (let f = Math.floor(barT(i) * fps); f < Math.min(nf, Math.ceil(barEnd(i) * fps)); f += video.step) { a += vis[Math.min(vis.length - 1, Math.floor(f / video.step))]; c++; } return c && a / c >= .5; };
     // bar 0 (the opening drop) stays dots; the freeze bar is the dots signature unless there is nothing else to use
     const E = new Set(); for (let i = 1; i < NBar; i++) if (role[i] !== 'freeze' && visBar(i)) E.add(i);
     if (E.size < 2) { const f = role.indexOf('freeze'); if (f > 0 && visBar(f)) E.add(f); }
@@ -187,8 +191,34 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
     for (const h of plan.holds) if (t >= h.t0 && t < h.t1) return Math.min(nf - 1, Math.floor(h.t0 * fps));
     return clamp(Math.floor(t * fps), 0, nf - 1); };
   const stillT = t => { const fz = plan.freeze; return (fz && t >= fz.t0 && t < fz.t1) || plan.holds.some(h => t >= h.t0 && t < h.t1); };
+  // --- camera shots (one per plates downbeat, a second mid-bar on quarter / accel bars); calm is all zero while live
+  function planShots() {
+    const shots = []; let prevKind = null, lastTop = -9, az = RC() * 6.283, nP = 0;
+    const calmMean = (t0, t1) => { let s2 = 0, c = 0; for (let i = Math.floor(t0 * OH); i <= Math.min(M - 1, Math.ceil(t1 * OH)); i++) { s2 += calm[i]; c++; } return c ? s2 / c : 0; };
+    const addShot = (t, t1, bi, entrance, mid) => {
+      const still = calmMean(t, t1) > .6, fan = stageBars[bi].lasers === 'fan';
+      let kinds = entrance ? ['push', 'orbit', 'low'] : still && !mid ? ['orbit', 'orbit', 'top'] : ['orbit', 'orbit', 'low', 'top', 'push', 'track', 'track', 'rake'];
+      kinds = kinds.filter(k => k !== prevKind && (k !== 'top' || nP - lastTop >= 4) && (k !== 'rake' || fan));
+      if (!kinds.length) kinds = ['orbit', 'low'].filter(k => k !== prevKind);
+      const kind = RC.pick(kinds); if (kind === 'top') lastTop = nP;
+      az += RC.range(70, 150) * Math.PI / 180 * (RC() < .5 ? -1 : 1);
+      shots.push({t, kind, az, r: RC.range(.9, 1.15), h: RC.range(.85, 1.2), sgn: still ? -dir : RC() < .5 ? -1 : 1, still, high: kind === 'orbit' && (still || RC() < .3), bar: bi});
+      prevKind = kind; nP++;
+    };
+    for (const r of runs) for (let i = r.b0; i < r.b1; i++) {
+      const t0 = i === r.b0 ? r.t0 : barT(i), mid = ['quarter', 'accel'].includes(role[i]) ? bt(barStarts[i] + 2) : null;
+      addShot(t0, mid != null && mid < barEnd(i) ? mid : barEnd(i), i, i === r.b0, false);
+      if (mid != null && mid < barEnd(i) - .05) addShot(mid, barEnd(i), i, false, true);
+    }
+    return shots;
+  }
   // --- orbit: angle integrates faster when the dancer is still (pure, 30 Hz grid)
   const OH = 30, M = Math.ceil(dur * OH) + 2, calm = new Float64Array(M), acc = new Float64Array(M), dir = RS() < .5 ? -1 : 1;
+  if (live) {                       // filled by the live director; orbitAt extrapolates past n
+    plan.orbit = {hz: OH, calm, acc, dir, n: 0, live: true};
+    const phi0 = RS() * 6.283, ghosts = [];
+    return Object.assign(plan, {scene, sceneNote: note, stages, runs, stageBars, shots: planShots(), ghosts, live: {phi0, sp}});
+  }
   let cv = 1 - smoothstep(.08, .4, stillT(0) ? 0 : env[sf(0)]), av = 0;
   for (let i = 0; i < M; i++) {
     const t = i / OH, e = stillT(t) ? 0 : env[sf(t)], tgt = 1 - smoothstep(.08, .4, e);
@@ -233,7 +263,6 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
   // time-ordered pass: pose frame, novelty gate, attributes, ring slots, lifetimes
   const area = video.area, amax = Math.max(...area, 1e-6), step = video.step;
   const ghosts = []; let lastDesc = null, lastT = -1e9;
-  const h = (j, n) => hsh(seed * 977.13 + j * 13.7 + n);
   const phi0 = RS() * 6.283;
   const mkGhost = (c, i, seeded) => {
     const s0 = sf(c.t); let best = -1, bs = -1e9;
@@ -241,31 +270,7 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
       const sc = .6 * area[k] / amax + .4 * s2.desc[s2.desc.length - 1] - .3 * Math.min(1, env[f] / 2); if (sc > bs) { bs = sc; best = f; } }
     return best;
   };
-  const matHist = [];
-  const addGhost = (c, f, seeded) => {
-    const i = ghosts.length, k = Math.min(st.length - 1, Math.floor(f / step));
-    let cls = seeded ? 'dark' : (c.forced || c.down) ? 'hit' : (c.move && !c.beat) ? 'move' : h(i, 1) < .4 ? 'hit' : h(i, 1) < .7 ? 'move' : 'dark';
-    if (matHist.length >= 2 && matHist[0] === cls && matHist[1] === cls) cls = cls === 'hit' ? 'move' : cls === 'move' ? 'dark' : 'hit';
-    matHist.unshift(cls); matHist.length = Math.min(2, matHist.length);
-    const mats = sp.mats[cls], mat = mats[Math.floor(h(i, 2) * mats.length) % mats.length];
-    const style = GLASS.has(mat) ? 'thin' : mat === 'redGloss' ? (h(i, 5) < .5 ? 'thin' : 'pebble') : mat === 'whiteHot' || mat === 'gold' ? (h(i, 5) < .5 ? 'bar' : 'pebble') : 'pebble';
-    const s2 = st[k], w = s2.ok ? (s2.x1 - s2.x0 + 1) / video.aw * 2 * (video.w / video.h) * (2.4 - 1.8 * s2.pd) * fit.k : .6;
-    // ring slot with clearance against the ghosts that can still be alive
-    // preferred spot: golden angle on the inner ring; else the nearest free spot on 3 rings x 24 angles; else the roomiest
-    const pref = phi0 + i * 2.39996, near = ghosts.slice(-GHOST.cap);
-    const room = (A, r) => { let mn = 1e9; for (const g of near) mn = Math.min(mn, Math.hypot(r * Math.sin(A) - g.r * Math.sin(g.ang), r * Math.cos(A) - g.r * Math.cos(g.ang)) - (.5 * (w + g.w) + .15)); return mn; };
-    let slot = null, best = null;
-    for (const r of [2.4 + .5 * h(i, 7), 3.3 + .3 * h(i, 8), 4.2]) {
-      for (let q = 0; q < 24; q++) { const A = pref + (q % 2 ? 1 : -1) * Math.ceil(q / 2) * Math.PI / 12, m = room(A, r);
-        if (m >= 0) { slot = {A, r}; break; } if (!best || m > best.m) best = {A, r, m}; }
-      if (slot) break;
-    }
-    if (!slot) slot = best;
-    const hold = seeded ? 0 : clamp(.5 * P, .2, .3), glide = seeded ? 0 : clamp(1.5 * P, .6, 1);
-    ghosts.push({i, t: c.t, f, di: k, kind: seeded ? 'seed' : c.beat && c.move ? 'both' : c.move ? 'move' : 'beat', mat, style, ang: slot.A, r: slot.r, w,
-      yawOff: 40 * Math.PI / 180 * (2 * h(i, 3) - 1), spin: (h(i, 4) < .5 ? -1 : 1) * (.25 + .35 * h(i, 6)), hold, glide, seeded: !!seeded,
-      root: fit.dpos[k].slice(), hidden: !seeded && inRunT(c.t) < 0, fade: Infinity});
-  };
+  const addGhost = ghostMaker({seed, P, sp, phi0, video, fit, st, inRunT}).bind(null, ghosts);
   if (scene === 'plates') {        // pre-seed a ring so a plates-only edit opens on a populated stage
     const qs = [.2, .4, .6, .8], used = [];
     qs.forEach((q, n) => { let best = -1, ba = -1; const c0 = Math.floor(q * nf);
@@ -280,31 +285,48 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
     if (!novel && !c.forced && !(c.down && c.t - lastT >= 4 * P)) continue;
     addGhost(c, f, false); lastDesc = st[k].desc; lastT = c.t;
   }
+  ghostFades(ghosts, stages[NBar - 1] === 'P' ? barT(NBar - 1) : null, P, dur);
+  const shots = planShots();
+  return Object.assign(plan, {scene, sceneNote: note, stages, runs, stageBars, shots, ghosts});
+}
+
+/** ghost attributes (material, plate style, ring slot, timing), shared by the planner and the live director.
+ *  Returns add(ghosts, candidate, frame, seeded) which appends a ghost; the draw order of h() is part of the plan. */
+export function ghostMaker({seed, P, sp, phi0, video, fit, st, inRunT}) {
+  const h = (j, n) => hsh(seed * 977.13 + j * 13.7 + n), matHist = [], step = video.step;
+  return (ghosts, c, f, seeded) => {
+    const i = ghosts.length, k = Math.min(st.length - 1, Math.floor(f / step));
+    let cls = seeded ? 'dark' : (c.forced || c.down) ? 'hit' : (c.move && !c.beat) ? 'move' : h(i, 1) < .4 ? 'hit' : h(i, 1) < .7 ? 'move' : 'dark';
+    if (matHist.length >= 2 && matHist[0] === cls && matHist[1] === cls) cls = cls === 'hit' ? 'move' : cls === 'move' ? 'dark' : 'hit';
+    matHist.unshift(cls); matHist.length = Math.min(2, matHist.length);
+    const mats = sp.mats[cls], mat = mats[Math.floor(h(i, 2) * mats.length) % mats.length];
+    const style = GLASS.has(mat) ? 'thin' : mat === 'redGloss' ? (h(i, 5) < .5 ? 'thin' : 'pebble') : mat === 'whiteHot' || mat === 'gold' ? (h(i, 5) < .5 ? 'bar' : 'pebble') : 'pebble';
+    const s2 = st[k], w = s2.ok ? (s2.x1 - s2.x0 + 1) / video.aw * 2 * (video.w / video.h) * (2.4 - 1.8 * s2.pd) * fit.k : .6;
+    // ring slot: golden angle on the inner ring; else the nearest free spot on 3 rings x 24 angles; else the roomiest
+    const pref = phi0 + i * 2.39996, near = ghosts.slice(-GHOST.cap);
+    const room = (A, r) => { let mn = 1e9; for (const g of near) mn = Math.min(mn, Math.hypot(r * Math.sin(A) - g.r * Math.sin(g.ang), r * Math.cos(A) - g.r * Math.cos(g.ang)) - (.5 * (w + g.w) + .15)); return mn; };
+    let slot = null, best = null;
+    for (const r of [2.4 + .5 * h(i, 7), 3.3 + .3 * h(i, 8), 4.2]) {
+      for (let q = 0; q < 24; q++) { const A = pref + (q % 2 ? 1 : -1) * Math.ceil(q / 2) * Math.PI / 12, m = room(A, r);
+        if (m >= 0) { slot = {A, r}; break; } if (!best || m > best.m) best = {A, r, m}; }
+      if (slot) break;
+    }
+    if (!slot) slot = best;
+    const hold = seeded ? 0 : clamp(.5 * P, .2, .3), glide = seeded ? 0 : clamp(1.5 * P, .6, 1);
+    const g = {i, t: c.t, f, di: k, kind: seeded ? 'seed' : c.beat && c.move ? 'both' : c.move ? 'move' : 'beat', mat, style, ang: slot.A, r: slot.r, w,
+      yawOff: 40 * Math.PI / 180 * (2 * h(i, 3) - 1), spin: (h(i, 4) < .5 ? -1 : 1) * (.25 + .35 * h(i, 6)), hold, glide, seeded: !!seeded,
+      root: fit.dpos[k].slice(), hidden: !seeded && inRunT(c.t) < 0, fade: Infinity};
+    ghosts.push(g); return g;
+  };
+}
+/** lifetimes: at most cap live, at least keep kept, life seconds; a plates ending collapses the ring one by one. */
+export function ghostFades(ghosts, endBarT, P, dur) {
   ghosts.forEach((g, i) => { const tc = ghosts[i + GHOST.cap], tk = ghosts[i + GHOST.keep];
     g.fade = Math.min(tc ? tc.t : Infinity, Math.max(g.t + GHOST.life, tk ? tk.t : Infinity)); });
-  if (stages[NBar - 1] === 'P') {                // plates ending: the ring collapses ghost by ghost, oldest first, before the clip ends
-    const t0 = barT(NBar - 1) + .25 * P, span = Math.max(0, dur - t0 - GHOST.collapse - .05), fin = ghosts.filter(g => g.t < barT(NBar - 1) && g.fade > t0);
+  if (endBarT != null) {                // plates ending: the ring collapses ghost by ghost, oldest first, before the clip ends
+    const t0 = endBarT + .25 * P, span = Math.max(0, dur - t0 - GHOST.collapse - .05), fin = ghosts.filter(g => g.t < endBarT && g.fade > t0);
     fin.forEach((g, k) => { g.fade = Math.min(g.fade, t0 + span * (fin.length > 1 ? k / (fin.length - 1) : 1)); });
   }
-  // --- camera shots (one per plates downbeat, a second mid-bar on quarter / accel bars)
-  const shots = []; let prevKind = null, lastTop = -9, az = RC() * 6.283, nP = 0;
-  const calmMean = (t0, t1) => { let s2 = 0, c = 0; for (let i = Math.floor(t0 * OH); i <= Math.min(M - 1, Math.ceil(t1 * OH)); i++) { s2 += calm[i]; c++; } return c ? s2 / c : 0; };
-  const addShot = (t, t1, bi, entrance, mid) => {
-    const still = calmMean(t, t1) > .6, fan = stageBars[bi].lasers === 'fan';
-    let kinds = entrance ? ['push', 'orbit', 'low'] : still && !mid ? ['orbit', 'orbit', 'top'] : ['orbit', 'orbit', 'low', 'top', 'push', 'track', 'track', 'rake'];
-    kinds = kinds.filter(k => k !== prevKind && (k !== 'top' || nP - lastTop >= 4) && (k !== 'rake' || fan));
-    if (!kinds.length) kinds = ['orbit', 'low'].filter(k => k !== prevKind);
-    const kind = RC.pick(kinds); if (kind === 'top') lastTop = nP;
-    az += RC.range(70, 150) * Math.PI / 180 * (RC() < .5 ? -1 : 1);
-    shots.push({t, kind, az, r: RC.range(.9, 1.15), h: RC.range(.85, 1.2), sgn: still ? -dir : RC() < .5 ? -1 : 1, still, high: kind === 'orbit' && (still || RC() < .3), bar: bi});
-    prevKind = kind; nP++;
-  };
-  for (const r of runs) for (let i = r.b0; i < r.b1; i++) {
-    const t0 = i === r.b0 ? r.t0 : barT(i), mid = ['quarter', 'accel'].includes(role[i]) ? bt(barStarts[i] + 2) : null;
-    addShot(t0, mid != null && mid < barEnd(i) ? mid : barEnd(i), i, i === r.b0, false);
-    if (mid != null && mid < barEnd(i) - .05) addShot(mid, barEnd(i), i, false, true);
-  }
-  return Object.assign(plan, {scene, sceneNote: note, stages, runs, stageBars, shots, ghosts});
 }
 
 /** orbit state at t: {ang, calm 0..1, acc = integral of calm^2}. Before 0 the stage keeps its first state. */
@@ -312,6 +334,7 @@ export function orbitAt(plan, t) {
   const o = plan.orbit; if (!o) return {ang: 0, calm: 1, acc: Math.max(0, t)};
   const x = t * o.hz;
   if (x <= 0) { const acc = t * o.calm[0] * o.calm[0]; return {ang: o.dir * (.03 * t + .3 * acc), calm: o.calm[0], acc}; }
+  if (o.n != null && x >= o.n - 1) { const j = Math.max(0, o.n - 1), c = o.calm[j], acc = o.acc[j] + c * c * (x - j) / o.hz; return {ang: o.dir * (.03 * t + .3 * acc), calm: c, acc}; }
   const i = Math.min(o.acc.length - 2, Math.floor(x)), f = Math.min(1, x - i);
   const acc = o.acc[i] + (o.acc[i + 1] - o.acc[i]) * f, calm = o.calm[i] + (o.calm[i + 1] - o.calm[i]) * f;
   return {ang: o.dir * (.03 * t + .3 * acc), calm, acc};
