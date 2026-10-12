@@ -50,6 +50,40 @@ The first run downloads the models and libraries from public CDNs (needs interne
 
 Analysis results are cached in IndexedDB (keyed by file name + size + settings), so re-opening the same clip is instant.
 
+## Live webcam mode
+
+1. In **Clip**, switch **Video / Webcam** to *Webcam* and allow the camera. If you have more than one, pick it in the
+   camera menu. The upload path is unchanged; switching back to *Video* restores your clip and its edit.
+2. Pick **any song**. It's analysed right away (tempo, bars, drops), and the timeline shows the plates sections and the
+   fade lane for the whole track.
+3. **Go live**: a 3 s count-in (3 2 1), then the song plays from 0:00 to the end. The dots and the plates stage follow
+   the song's beat grid (looks, strobes, flashes, camera shots, plates sections) and your moves. Strong beats and
+   sudden moves freeze your pose into plates, which orbit faster when you stand still.
+4. **Record** starts a fresh take the same way and saves it, picture and song, when the song ends or you press
+   **Stop**. A **Download** link appears (MP4 where Chrome's MediaRecorder supports it, otherwise WebM).
+
+Look and Output settings are locked during a take and apply to the next one. The take runs at a fixed 30 fps, and
+the long side of the canvas is capped at 1280 px. If frames run slow, the app first drops MSAA and the dancer's
+floor reflection, then runs person detection on every other frame. The log shows each step and the ms per frame.
+
+**Depth, live.** Depth-Anything is too slow for 30 fps in a browser, and brightness alone (like a luma height map)
+puts dark clothes behind the wall. Live mode builds a depth map from things that are cheap to get every frame:
+- **Person vs background.** MediaPipe PoseLandmarker in VIDEO mode (GPU) gives a person mask and 33 landmarks.
+  The background becomes a floor-like gradient behind you.
+- **Body volume.** A distance transform of the mask (a few ms on a 266 px-wide map) makes the middle of the body
+  nearer than its edges, so the dots read as a rounded figure instead of a flat cut-out.
+- **Limbs.** Each landmark's z is drawn as a capsule along the bone, so an arm reaching toward the camera comes out nearer.
+- **Distance.** The person's apparent size (torso length) sets how near the whole figure is: step toward the camera
+  and it comes forward.
+- **Detail.** A little brightness on top for folds and texture.
+
+Masks and depth are smoothed over time only where they agree, so fast moves don't leave trails. If MediaPipe can't
+load, it falls back to the selfie segmenter. If that also fails, it uses the brightness depth, dots only.
+
+**Sync.** One clock: frames are tagged with their camera capture time and placed on the song's timeline as you hear
+it (`AudioContext.getOutputTimestamp`). While recording, the song is delayed by the measured output and camera latency,
+so in the saved file you land on the beat, even over Bluetooth.
+
 ## What it does (pipeline)
 
 | Stage | Implementation (`src/`) |
@@ -68,6 +102,7 @@ Analysis results are cached in IndexedDB (keyed by file name + size + settings),
 | Planner | `planner.js`: seeded. Per-bar roles (`drop`, `half`, `quarter`, `spark`, `accel`, `freeze`, `echo`, `end`) → look schedule at varying rates, 1-frame strobes, downbeat flashes, detonations, echo hits, holds → slam, freeze-orbit, fly-through, scatter/re-form, camera swings, per-bar camera snaps |
 | Renderer | `renderer.js` + `shaders.js`: WebGL2 point cloud (each dot is a source pixel lifted by depth). Figure shells and depth layers, always-moving camera (kick dolly/whip alternating, bar snaps, drop orbit, fly-through, freeze orbit), shockwave rings, detonations with recoil, scatter + re-form, DOF, fog, bloom, chromatic split, shake, motion trails. Looks: LED source-colour dots, macro LED, ink-on-cream, gold-on-black, flat colour dots, inverted dots, glowing sparkle cloud, rainbow echo, raw strobe. No magenta |
 | Stage renderer | `stage.js`: HDR (RGBA16F, 4x MSAA on GPUs) synthetic stage. Planar-reflection floor with a white/red grid and arcs, height fog, spot cones and pools, red laser fans and cages, light pillars, a hoop at the dancer, instanced superellipse plates (print-in, glide, spin, collapse), and the live dancer as dense source-colour dots via the point shader. Then bloom, tonemap, camera motion blur and the shared composite (flash, shake, fade lane). Falls back to a dots look if WebGL can't run it |
+| Live webcam | `live.js`: camera frames via `requestVideoFrameCallback` → PoseLandmarker (VIDEO mode) mask + landmarks → hybrid depth (mask distance-field relief, landmark limb z, size-based distance, luma detail), per-frame pose stats and fit, a 16-slot GPU frame pool, a director that spawns ghosts on the 1/8 grid and integrates the orbit as the take runs, and MediaRecorder on `canvas.captureStream` with the song through a latency-matched delay |
 | Export | `exporter.js`: WebCodecs `VideoEncoder` (H.264 High) + `AudioEncoder` (AAC, or Opus if AAC isn't available), muxed with mp4-muxer (fast-start). Falls back to MediaRecorder WebM (real time) if WebCodecs fails |
 
 ## Notes / limits
@@ -86,6 +121,9 @@ Analysis results are cached in IndexedDB (keyed by file name + size + settings),
 - If AAC encoding isn't available (e.g. Chrome on Linux), the MP4 carries **Opus** audio. It plays in Chrome, VLC
   and ffmpeg, but QuickTime and some social uploaders want AAC. Re-mux with `ffmpeg -i in.mp4 -c:v copy -c:a aac out.mp4`.
 - Exports are encoded at the chosen bitrate. 1080p60 "high" is ~15 Mbps.
+- **Live mode** needs a camera and Chrome's MediaRecorder. Recording is real time (a screen capture of the canvas),
+  so a slow machine records what it showed. Good light and the whole body in frame give the best mask. Hiding the tab
+  ends and saves the take.
 
 ## Files
 
@@ -101,6 +139,7 @@ src/stage.js      plates stage: HDR scene, rig, camera shots, ghosts, dancer
 src/pose.js       pose stats, source -> stage mapping, movement envelope, plate geometry
 src/shaders.js    GLSL (dots, bloom, composite)
 src/exporter.js   WebCodecs + mp4-muxer export, MediaRecorder fallback
+src/live.js       live webcam mode: analyzer (mask + hybrid depth), live bundle, director, session + recorder
 src/util.js       helpers (seeded RNG, smoothing, IndexedDB cache)
 test/             headless end-to-end test (Playwright + Chrome)
 ```
@@ -114,6 +153,9 @@ node --test test/plan_test.mjs        # planner: dots edit unchanged, determinis
 node test/plates_e2e.mjs              # renders through the real renderer in headless Chromium (SwiftShader):
                                       # dots baseline hashes, scrub determinism, GL state, stage frames -> test/out/
 SCENE=plates FULL=1 node test/plates_e2e.mjs   # also writes MP4s to test/out/ (needs ffmpeg)
+node test/live_e2e.mjs                # live mode: the synthetic dancer as camera frames through the real analyzer,
+                                      # director and renderer (depth, fit, spawns, orbit, pool bounds, GL state),
+                                      # then the real UI with Chromium's fake camera: Go live, Record, Stop, ffprobe the take
 ```
 
 ## Headless test

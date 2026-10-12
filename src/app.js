@@ -4,9 +4,11 @@ import {makePlan, describePlan, effectAt} from './planner.js';
 import {DotRenderer} from './renderer.js';
 import {exportMp4, exportWebm} from './exporter.js';
 import {clamp} from './util.js';
+import {LiveSession, liveFx, livePlan} from './live.js';
 
 const $ = id => document.getElementById(id);
-const S = {videoFile: null, audioFile: null, video: null, songBuf: null, A: null, start: 0, mix: null, grid: null, plan: null, playing: false, busy: false, lastExport: null, fx: null, fxSel: -1, fxDrag: null};
+const S = {videoFile: null, audioFile: null, video: null, songBuf: null, A: null, start: 0, mix: null, grid: null, plan: null, playing: false, busy: false, lastExport: null, fx: null, fxSel: -1, fxDrag: null,
+  src: 'video', liveOn: false, recording: false, saved: null, camW: 1280, camH: 720};
 window.dotfx = S;
 const logEl = $('log');
 function logKind(m) {
@@ -211,6 +213,7 @@ function showOut() {
 }
 function replan() {
   if (S.exporting) { S.replanPending = true; return; }   // the export owns the renderer until it finishes
+  if (S.src === 'cam') { camPlan(); return; }
   showOut();
   if (S.video) $('durTxt').textContent = S.video.dur.toFixed(2) + 's';
   if (!S.video || !S.grid) return;
@@ -224,7 +227,7 @@ function replan() {
 }
 let drawing = false, pending = null;
 async function drawFrame(t) {
-  if (!S.plan) return; if (drawing) { pending = t; return; }
+  if (!S.plan || S.src === 'cam') return; if (drawing) { pending = t; return; }
   drawing = true; try { await R.renderAt(t); } catch (e) { log('render error ' + e.message); }
   drawing = false; $('time').textContent = t.toFixed(2) + 's';
   if (pending != null) { const p = pending; pending = null; drawFrame(p); }
@@ -255,6 +258,7 @@ async function play() {
 
 // ---------- pipeline ----------
 async function analyze() {
+  if (S.src === 'cam') { if (S.liveOn) return stopLive(); return goLive(false); }
   if (S.busy) return; S.videoFile = $('fVideo').files[0] || S.videoFile; S.audioFile = $('fAudio').files[0] || S.audioFile;
   S.keep = $('keepAudio').checked;
   if (!S.videoFile) { log('pick a video first'); return; }
@@ -277,6 +281,7 @@ async function analyze() {
   finally { S.busy = false; setButtons(); }
 }
 async function doExport() {
+  if (S.src === 'cam') { if (S.recording) return stopLive(); return goLive(true); }
   if (!S.plan || S.busy) return; S.busy = S.exporting = true; stop(); setButtons();
   const [W, H] = outSize(+$('size').value), F = fps(), dur = S.video.dur, t0 = performance.now();
   let res;
@@ -299,8 +304,19 @@ async function doExport() {
   return res;
 }
 function setButtons() {
+  if (S.src === 'cam') {                              // webcam: Go live -> Record -> Stop, one white action at a time
+    const ready = !!(S.A && S.songBuf), lock = S.liveOn || S.busy;
+    $('bAnalyze').textContent = S.liveOn ? 'Stop' : 'Go live'; $('bAnalyze').disabled = !ready || S.busy || S.recording;
+    $('bExport').textContent = S.recording ? 'Stop' : 'Record'; $('bExport').disabled = !ready || S.busy;
+    $('bAnalyze').classList.toggle('accent', ready && !S.liveOn); $('bExport').classList.toggle('accent', S.liveOn);
+    for (const id of ['bAuto', 'bPlay', 'bFxReset']) $(id).disabled = true;
+    $('bReroll').disabled = lock || !ready;
+    for (const id of ['scene', 'seed', 'fps', 'aspect', 'size', 'palette', 'intensity', 'strobe', 'start', 'scrub', 'snapBar', 'bitrate', 'quality', 'camSel', 'srcVideo', 'srcCam', 'fAudio']) $(id).disabled = lock;
+    return;
+  }
+  $('bAnalyze').textContent = 'Analyse'; $('bExport').textContent = 'Export';
   for (const id of ['bAnalyze', 'bExport', 'bAuto', 'bReroll', 'bPlay', 'bFxReset']) $(id).disabled = S.busy || (id !== 'bAnalyze' && !S.plan);
-  for (const id of ['scene', 'seed', 'fps', 'aspect', 'size', 'palette', 'intensity', 'strobe', 'start', 'scrub', 'snapBar', 'bitrate', 'quality']) $(id).disabled = !!S.busy;
+  for (const id of ['scene', 'seed', 'fps', 'aspect', 'size', 'palette', 'intensity', 'strobe', 'start', 'scrub', 'snapBar', 'bitrate', 'quality', 'camSel', 'srcVideo', 'srcCam', 'fAudio']) $(id).disabled = !!S.busy;
   $('bAnalyze').classList.toggle('accent', !S.plan);
   $('bExport').classList.toggle('accent', !!S.plan);
 }
@@ -310,8 +326,97 @@ function bindFileName(id, empty) {
     const file = input.files[0];
     name.textContent = file ? file.name : empty;
     if (id === 'fVideo') $('clipName').textContent = file ? file.name : 'No clip';
+    if (id === 'fAudio' && S.src === 'cam') prepareSong().catch(e => log('ERROR ' + e.message));
   });
 }
+
+// ---------- live webcam mode
+const live = S.liveSession = new LiveSession(R, {log,
+  onCount: n => { $('countTxt').hidden = !(n > 0); $('countTxt').textContent = n > 0 ? String(n) : ''; },
+  onTime: (t, dur) => { const now = performance.now(); if (now - (S.liveDraw || 0) < 120) return; S.liveDraw = now;
+    $('scrub').value = t / dur; $('time').textContent = t.toFixed(2) + 's'; drawBeats();
+    if (S.recording) { const r = live.recSeconds(); $('recTxt').textContent = `REC ${Math.floor(r / 60)}:${String(Math.floor(r % 60)).padStart(2, '0')}`; } },
+  onState: st => {
+    if (st === 'recording') { $('recTxt').hidden = false; return; }
+    if (st === 'idle') { S.liveOn = false; S.recording = false; $('recTxt').hidden = true; $('countTxt').hidden = true; setButtons(); if (S.src === 'cam') S.video = camVideo();
+      if (S.plan) $('planTxt').textContent = describePlan(S.plan); drawBeats(); }
+  },
+  onRecorded: ({blob, ext}) => { const a = $('dl'); if (a.href) URL.revokeObjectURL(a.href); a.href = URL.createObjectURL(blob); a.download = `volta_live_${Date.now()}.${ext}`;
+    a.textContent = `Download ${ext.toUpperCase()} (${(blob.size / 1e6).toFixed(1)} MB)`; a.style.display = 'inline-block'; log(`recorded ${ext} ${(blob.size / 1e6).toFixed(1)} MB`); }});
+// the stand-in analysis for the timeline in webcam mode: the whole song, no frames yet
+const camVideo = () => ({live: true, fps: 30, step: 1, n: 0, dur: S.A ? S.A.duration : 0, srcW: S.camW, srcH: S.camH, w: 640, h: Math.round(640 * S.camH / S.camW), aw: 266, ah: 150, dm: [], area: [], piv: [], motion: []});
+function camPlan() {
+  if (!S.A || S.liveOn) return;
+  S.video = camVideo(); S.start = 0;
+  S.plan = livePlan(S.A, S.video, opts()); bindFx(S.plan);
+  $('planTxt').textContent = describePlan(S.plan); $('durTxt').textContent = S.A.duration.toFixed(2) + 's';
+  showOut(); showScene(); drawWave(); drawBeats(); setButtons();
+}
+async function prepareSong() {
+  const f = $('fAudio').files[0] || S.audioFile; if (!f) return;
+  S.audioFile = f; S.busy = true; setButtons(); progress(.3, 'analysing the song');
+  try {
+    S.songBuf = await decodeAudioFile(f); S.A = await analyzeAudio(S.songBuf);
+    $('audioInfo').textContent = `${S.A.bpm.toFixed(1)} BPM · ${S.A.bars.length} bars · ${S.A.bars.filter(b => b.drop).length} drop hits · song ${S.A.duration.toFixed(1)}s`;
+    log('song: ' + $('audioInfo').textContent); S.fx = liveFx(S.A); progress(1, 'song ready, go live');
+  } finally { S.busy = false; }
+  camPlan();
+}
+async function openCam() {
+  try {
+    const info = await live.openCamera($('camView'), $('camSel').value || undefined);
+    S.camW = info.w; S.camH = info.h; $('camWell').dataset.on = '1';
+    log(`camera: ${info.label || 'on'} ${info.w}x${info.h}`);
+    const sel = $('camSel'), cur = sel.value, devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+    sel.innerHTML = ''; for (const d of devs) { const o = document.createElement('option'); o.value = d.deviceId; o.textContent = d.label || 'Camera ' + (sel.length + 1); sel.append(o); }
+    if (cur && devs.some(d => d.deviceId === cur)) sel.value = cur;
+    camPlan();
+    return true;
+  } catch (e) {
+    const why = {NotAllowedError: 'camera permission was denied', NotFoundError: 'no camera found', NotReadableError: 'the camera is in use by another app'}[e.name] || e.message;
+    log('ERROR camera: ' + why); delete $('camWell').dataset.on; return false;
+  }
+}
+function liveSize() { const [W, H] = outSize(+$('size').value), k = Math.min(1, 1280 / Math.max(W, H)); return [Math.round(W * k / 2) * 2, Math.round(H * k / 2) * 2]; }
+async function goLive(record) {
+  if (!S.A || !S.songBuf) { log('pick a song first'); return; }
+  if (!live.stream && !(await openCam())) return;
+  S.busy = true; setButtons();
+  try {
+    if (!live.an) log('live: loading person detection');
+    const mode = await live.loadModels(S.liveSegmenter);
+    if (mode === 'luma') log('live: no person detection here, the dots use brightness depth');
+    stop(); const [W, H] = liveSize(); R.setSize(W, H);
+    S.liveOn = true; S.recording = record; S.busy = false; setButtons();
+    document.body.dataset.ready = '1'; $('dl').style.display = 'none';
+    S.plan = await live.start({songBuf: S.songBuf, A: S.A, opts: opts(), fx: S.fx, record, countIn: S.countIn ?? 3});
+    showScene(); $('planTxt').textContent = describePlan(S.plan);
+    log(`live: ${record ? 'recording a take' : 'take'} at ${W}x${H}, ${S.plan.runs.length} plates sections over ${S.A.duration.toFixed(0)}s`);
+  } catch (e) { S.liveOn = S.recording = false; log('ERROR live ' + e.message); console.error(e); }
+  finally { S.busy = false; setButtons(); }
+}
+async function stopLive() { await live.stop(true); }
+async function setSource(src) {
+  if (S.src === src || S.busy || S.liveOn) return;
+  stop();
+  if (src === 'cam') {
+    S.saved = {video: S.video, plan: S.plan, start: S.start, mix: S.mix, grid: S.grid, fx: S.fx, A: S.A, songBuf: S.songBuf, ready: document.body.dataset.ready};
+    S.video = S.plan = S.mix = S.grid = null; S.fx = null; delete document.body.dataset.ready;
+  } else {
+    await live.stop(false); live.closeCamera(); delete $('camWell').dataset.on;
+    const v = S.saved || {}; Object.assign(S, {video: v.video || null, plan: v.plan || null, start: v.start || 0, mix: v.mix || null, grid: v.grid || null, fx: v.fx || null, A: v.A || null, songBuf: v.songBuf || null});
+    if (v.ready) document.body.dataset.ready = v.ready; else delete document.body.dataset.ready;
+  }
+  S.src = src; document.body.dataset.src = src;
+  $('srcVideo').setAttribute('aria-pressed', String(src === 'video')); $('srcCam').setAttribute('aria-pressed', String(src === 'cam'));
+  $('clipName').textContent = src === 'cam' ? 'Webcam' : (S.videoFile ? S.videoFile.name : 'No clip');
+  setButtons(); showOut();
+  if (src === 'cam') { await openCam(); if ($('fAudio').files[0] && !S.A) await prepareSong(); else camPlan(); }
+  else if (S.plan && S.video) replan(); else { drawWave(); drawBeats(); $('planTxt').textContent = ''; }
+}
+$('srcVideo').onclick = () => setSource('video');
+$('srcCam').onclick = () => setSource('cam');
+$('camSel').onchange = () => { if (S.src === 'cam' && !S.liveOn) openCam(); };
 setButtons();
 bindFileName('fVideo', 'Choose a clip');
 bindFileName('fAudio', 'Choose a song');
@@ -398,6 +503,6 @@ for (const [id, txt] of [['intensity', 'intTxt'], ['strobe', 'strTxt']]) { $(id)
 window.addEventListener('resize', drawWave);
 
 // automation hooks (used by the headless test; harmless otherwise)
-S.api = {analyze, doExport, replan, autoPick, setStart, setButtons, set: (id, v) => { $(id).value = v; if (id === 'keepAudio') $(id).checked = !!v; },
+S.api = {analyze, doExport, replan, autoPick, setStart, setButtons, setSource, prepareSong, goLive, stopLive, set: (id, v) => { $(id).value = v; if (id === 'keepAudio') $(id).checked = !!v; },
   exportBase64: async () => { const r = S.lastExport; const buf = new Uint8Array(await r.blob.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 32768) s += String.fromCharCode.apply(null, buf.subarray(i, i + 32768)); return btoa(s); }};
 log('ready - WebGL2 OK. WebGPU: ' + ('gpu' in navigator ? 'API present' : 'not available (depth will use WASM)') + ', WebCodecs: ' + ('VideoEncoder' in window));
