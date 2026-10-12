@@ -1,13 +1,15 @@
 // Live webcam mode. Camera frame -> person mask (MediaPipe, VIDEO mode) -> hybrid depth relief -> a growing analysis
-// bundle that looks like the clip analysis -> live ghost director -> the normal renderer, driven by the song clock.
+// bundle that looks like the clip analysis -> live ghost director -> the normal renderer. Two clocks: the footage is
+// camera time (always the newest frame), the edit is song time (Play / Pause / seek), so any point of the song can be
+// tried on the live dancer and every setting re-plans in place.
 // Depth is built every frame from cheap signals: the person mask's distance field (round body volume), pose-landmark
 // z for the limbs (arms reaching to the camera come forward), apparent size (nearer when closer) and pixel brightness
 // for surface detail; the room sits behind on a floor-like gradient.
 import { loadVision, POSE_MODEL, SEG_MODEL } from './video.js';
 import { poseStatsFrame, bindLive, descDist, distOf, liftSrc, FIG_H, slabBase } from './pose.js';
-import { makePlan, ghostMaker, ghostFades, inRun } from './planner.js';
+import { makePlan, ghostMaker, ghostFades, ghostMat, inRun } from './planner.js';
 import { gridFor } from './audio.js';
-import { clamp, smoothstep, pct, D0 } from './util.js';
+import { clamp, smoothstep, pct, hsh, D0 } from './util.js';
 
 export const LIVE_FPS = 30;
 const AW = 266, RING = 64;
@@ -131,10 +133,10 @@ export class LiveBundle {
     Object.assign(this, {live: true, fps: LIVE_FPS, step: 1, n: 0, w, h, srcW: w, srcH: h, aw, ah, dur: 0, frames: [], dm: [], piv: [], area: [], motion: [],
       cut: [], dposS: [], stats: [], info: {depth: 'live hybrid relief', seg: ''}});
     this.fit = {k: 1, A: [], off: [], yb: [], dpos: [], rowFloor: ah - .5, cutFrac: 0, persons: 0};
-    bindLive(this, {stats: this.stats, fit: this.fit});
-    this.am = null; this.calibrated = false; this.ema = [0, 0, 0]; this.emaS = [0, 0, 0];
+    this.cache = bindLive(this, {stats: this.stats, fit: this.fit});
+    this.am = null; this.calibrated = false; this.ema = [0, 0, 0]; this.emaS = [0, 0, 0]; this.pruned = 0;
   }
-  /** fix the stage scale, floor row and stage centre from the count-in frames (then they only drift slowly). */
+  /** fix the stage scale, floor row and stage centre from the first person frames (then they only drift slowly). */
   calibrate(samples) {
     const ok = samples.filter(r => r.stats.ok), {ah} = this, fit = this.fit;
     if (ok.length < 5) return false;
@@ -147,9 +149,9 @@ export class LiveBundle {
     this.am = [0, 1, 2].map(i => pct(As.map(a => a[i]), .5));
     this.hRef = pct(ok.map(r => r.hFrac), .5); this.calibrated = true; return true;
   }
-  /** store frame index fi (indices skipped since the last push point at the same frame). */
+  /** store camera frame fi (indices skipped since the last push point at the same frame). */
   push(fi, r) {
-    if (!this.calibrated && r.stats.ok) { (this.pre = this.pre || []).push(r); if (this.pre.length >= 15) this.calibrate(this.pre); }
+    if (!this.calibrated && r.stats.ok) { (this.pre = this.pre || []).push(r); if (this.pre.length >= 15) { this.calibrate(this.pre); this.pre = null; } }
     const fit = this.fit, s = r.stats, ah = this.ah, from = this.n;
     let A = fit.A[from - 1], off = fit.off[from - 1] || 0, yb = fit.yb[from - 1] || 0;
     if (s.ok) {
@@ -169,65 +171,112 @@ export class LiveBundle {
     for (let i = Math.max(0, from - RING - 8); i < fi - RING; i++) this.dm[i] = undefined;     // the colour frames live in the renderer's GPU pool
     this.n = fi + 1; this.dur = this.n / this.fps;
   }
+  /** a long session: drop the heavy per-frame data (stats, slab cache) of frames older than keepFrom (the small
+   *  arrays stay: a few MB an hour). Frames the renderer holds (a freeze snapshot) are kept. Printed ghosts keep their own copies. */
+  prune(keepFrom, pinned = new Set()) {
+    if (keepFrom <= this.pruned) return;
+    for (let i = this.pruned; i < keepFrom; i++) if (!pinned.has(i)) { this.stats[i] = undefined; this.dm[i] = undefined; }
+    for (const k of this.cache.slabs.keys()) if (parseInt(k, 10) < keepFrom) this.cache.slabs.delete(k);
+    this.pruned = keepFrom;
+  }
 }
 
-/** spawns live ghosts on the song's beats and the dancer's moves, and integrates the orbit while the take runs. */
+const ENV_W = 300, ENV_KEEP = 600, CAPS = {drop: 4, half: 4, spark: 2, quarter: 5, accel: 6, freeze: 2, echo: 4, end: 1};
+/** spawns live ghosts on the song's beats and the dancer's moves, and integrates the orbit as the song plays.
+ *  It owns the ring for the whole session (ghosts, orbit, phase), whatever the scene: a stage plan points at it, a dots
+ *  plan leaves it alone, and a seek re-performs from there (later ghosts are dropped, the orbit rewinds). */
 export class LiveDirector {
-  constructor(plan, V, stage) {
-    this.plan = plan; this.V = V; this.stage = stage; const {P, beats} = plan;
+  constructor(V, stage, {seed = 1, dur}) {
+    this.V = V; this.stage = stage; this.dur = dur; this.seed0 = seed;
+    this.ghosts = []; this.orbit = null; this.phi0 = 0;
+    this.env = []; this.raw = []; this.base = 0; this.ef = 0; this.cv = 1; this.av = 0; this.amax = 1e-6;
+    this.j = -1; this.lastDesc = null; this.lastT = -1e9; this.perBar = new Map();
+  }
+  /** a new plan (settings changed): rebuild what comes from the plan, keep the ring and every integrator */
+  setPlan(plan) {
+    const V = this.V, {P, beats} = plan; this.plan = plan;
+    if (!this.orbit) {                // the ring state, from the first plan with a stage (or the seed when it starts on dots)
+      const M = Math.ceil(this.dur * LIVE_FPS) + 2;
+      this.orbit = plan.orbit && plan.orbit.live ? plan.orbit : {hz: LIVE_FPS, calm: new Float64Array(M), acc: new Float64Array(M), dir: hsh(this.seed0 * 31.7) < .5 ? -1 : 1, n: 0, live: true};
+      this.phi0 = plan.live ? plan.live.phi0 : hsh(this.seed0 * 17.3) * 6.283;
+    }
     this.bt = b => { const k = Math.floor(b), f = b - k; const t0 = k < beats.length ? beats[k] : beats[beats.length - 1] + (k - beats.length + 1) * P; return t0 + f * P; };
-    this.maker = plan.live ? ghostMaker({seed: plan.seed, P, sp: plan.live.sp, phi0: plan.live.phi0, video: V, fit: V.fit, st: V.stats, inRunT: t => inRun(plan, t)}) : null;
     this.down = new Set(plan.barStarts.map(t => Math.round(t * 1e4))); this.runDown = plan.runs.map(r => plan.barStarts[r.b0] ?? r.t0);
     this.endT = plan.stages.length && plan.stages[plan.stages.length - 1] === 'P' ? plan.barStarts[plan.barStarts.length - 1] : null;
-    this.j = -1; this.env = []; this.raw = []; this.ef = 0; this.cv = 1; this.av = 0; this.lastDesc = null; this.lastT = -1e9; this.perBar = new Map(); this.amax = 1e-6;
+    this.maker = null;
+    if (plan.live) {
+      plan.orbit = this.orbit; plan.ghosts = this.ghosts; plan.live.phi0 = this.phi0;
+      this.maker = ghostMaker({seed: plan.seed, P, sp: plan.live.sp, phi0: this.phi0, video: V, fit: V.fit, st: V.stats, inRunT: t => inRun(plan, t)});
+      for (const g of this.ghosts) { g.mat = ghostMat(g, plan.live.sp); g.hidden = !g.seeded && inRun(plan, g.t) < 0; }
+      ghostFades(this.ghosts, this.endT, P, plan.dur);
+    }
   }
   stillT(t) { const fz = this.plan.freeze; return (fz && t >= fz.t0 && t < fz.t1) || this.plan.holds.some(h => t >= h.t0 && t < h.t1); }
-  /** after V.push: movement envelope for the new frames (online normalisation over the last ~10 s) */
+  /** after V.push: movement envelope for the new camera frames (online normalisation over the last ~10 s) */
   frame(fi) {
-    const V = this.V, W = 300;
+    const V = this.V;
     for (let i = this.ef; i <= fi; i++) {
-      const s = V.stats[i] || {dd: 0}; this.amax = Math.max(this.amax, V.area[i] || 0);
-      const mo = this.raw.slice(-W), m75 = Math.max(.5, pct(mo.map(x => x[0]), .75)), d75 = Math.max(.012, pct(mo.map(x => x[1]), .75));
+      const s = V.stats[i] || {dd: 0}; this.amax = Math.max(this.amax * .9995, V.area[i] || 0);
+      const mo = this.raw.slice(-ENV_W), m75 = Math.max(.5, pct(mo.map(x => x[0]), .75)), d75 = Math.max(.012, pct(mo.map(x => x[1]), .75));
       this.raw.push([V.motion[i] || 0, s.dd || 0]);
       const m = Math.max(.5 * (V.motion[i] || 0) / m75, (s.dd || 0) / d75), prev = this.env.length ? this.env[this.env.length - 1].s : m, sm = prev + (m - prev) * .5;
-      const hist = this.env.slice(-W).map(e => e.s), lo = hist.length > 20 ? pct(hist, .3) : 0, hi = hist.length > 20 ? pct(hist, .92) : 1;
+      const hist = this.env.slice(-ENV_W).map(e => e.s), lo = hist.length > 20 ? pct(hist, .3) : 0, hi = hist.length > 20 ? pct(hist, .92) : 1;
       this.env.push({s: sm, e: clamp((sm - lo) / Math.max(hi - lo, .35), 0, 2)});
     }
     this.ef = fi + 1;
+    const drop = this.env.length - ENV_KEEP; if (drop >= 60) { this.env.splice(0, drop); this.raw.splice(0, drop); this.base += drop; }
   }
-  envAt(i) { const e = this.env[clamp(i, 0, this.env.length - 1)]; return e ? e.e : 0; }
-  /** song time t (seconds): orbit up to t, ghosts for every 1/8 grid point passed */
-  update(t) {
-    const plan = this.plan, o = plan.orbit, V = this.V;
-    if (o) for (let i = o.n; i <= Math.min(o.calm.length - 1, Math.floor(t * o.hz)); i++) {
-      const ti = i / o.hz, e = this.stillT(ti) ? 0 : this.envAt(Math.min(i, V.n - 1)), tgt = 1 - smoothstep(.08, .4, e);
-      if (i) { const tau = tgt > this.cv ? .7 : .1; this.cv += (tgt - this.cv) * (1 - Math.exp(-1 / o.hz / tau)); this.av += this.cv * this.cv / o.hz; }
-      o.calm[i] = this.cv; o.acc[i] = this.av; o.n = i + 1;
+  envAt(i) { const e = this.env[clamp(i - this.base, 0, this.env.length - 1)]; return e ? e.e : 0; }
+  /** song time t, newest camera frame ci: orbit up to t, a ghost candidate for every 1/8 grid point passed */
+  update(t, ci) {
+    const plan = this.plan, o = this.orbit, k = Math.min(o.calm.length - 1, Math.floor(t * o.hz));
+    if (k >= o.n) {
+      const e0 = this.envAt(ci);
+      for (let i = o.n; i <= k; i++) {
+        const tgt = 1 - smoothstep(.08, .4, this.stillT(i / o.hz) ? 0 : e0);
+        if (i) { const tau = tgt > this.cv ? .7 : .1; this.cv += (tgt - this.cv) * (1 - Math.exp(-1 / o.hz / tau)); this.av += this.cv * this.cv / o.hz; }
+        o.calm[i] = this.cv; o.acc[i] = this.av;
+      }
+      o.n = k + 1;
     }
-    if (!plan.runs.length || !this.maker) return;
-    for (;;) { const j = this.j + 1, te = this.bt(j / 2); if (te > t) break; this.j = j; if (te >= 0) this.candidate(j, te); }
+    // the grid cursor always moves (so switching dots -> plates never replays a backlog); stale points (a stall) are skipped
+    for (;;) { const j = this.j + 1, te = this.bt(j / 2); if (te > t) break; this.j = j;
+      if (te >= 0 && t - te < .5 && this.maker && plan.runs.length) this.candidate(j, te, ci); }
   }
-  candidate(j, te) {
+  /** jump the song to t: re-perform from there. Later ghosts go, the orbit rewinds (or extrapolates forward), no backlog. */
+  seek(t) {
+    const o = this.orbit, k = clamp(Math.floor(t * o.hz), 0, o.calm.length - 1);
+    if (k < o.n) { o.n = k + 1; this.cv = o.calm[k]; this.av = o.acc[k]; }
+    else { for (let i = o.n; i <= k; i++) { o.calm[i] = this.cv; o.acc[i] = i ? o.acc[i - 1] + this.cv * this.cv / o.hz : 0; } o.n = k + 1; this.av = o.acc[k]; }
+    const m = this.ghosts.findIndex(g => g.t > t + 1e-9); if (m >= 0) this.ghosts.length = m;
+    let j = -1; while (this.bt((j + 1) / 2) <= t) j++; this.j = j;
+    this.perBar = new Map(); for (const g of this.ghosts) if (g.bar != null) this.perBar.set(g.bar, (this.perBar.get(g.bar) || 0) + 1);
+    const lg = this.ghosts[this.ghosts.length - 1]; this.lastT = lg ? lg.t : -1e9; this.lastDesc = lg ? lg.desc || null : null;
+    if (this.plan.live) ghostFades(this.ghosts, this.endT, this.plan.P, this.plan.dur);
+    this.stage.restoreLive(this.ghosts);
+  }
+  candidate(j, te, f) {
     const plan = this.plan, V = this.V, P = plan.P, k = j / 2, isBeat = j % 2 === 0, down = isBeat && this.down.has(Math.round(te * 1e4));
     const beat = isBeat && ((plan.kick[k] ?? .6) >= .8 || down) ? 1 : 0, forced = this.runDown.some(r => Math.abs(r - te) < 1e-6);
-    // a move: an envelope peak in the last ~100 ms that rose quickly
-    const f = clamp(Math.floor(te * LIVE_FPS), 0, V.n - 1); let move = 0, mv = 0;
+    // a move: an envelope peak in the last ~100 ms (camera frames) that rose quickly
+    let move = 0, mv = 0;
     for (let q = Math.max(6, f - 3); q <= f; q++) { const e = this.envAt(q); if (e < .8) continue; let lo = 9; for (let r = q - 6; r < q; r++) lo = Math.min(lo, this.envAt(r)); if (e - lo >= .35) { move = 1; mv = Math.max(mv, e); } }
     if (!beat && !move && !forced) return;
     let b = -1; for (let i = 0; i < plan.barStarts.length; i++) if (plan.barStarts[i] <= te + 1e-6) b = i;
-    const inP = inRun(plan, te) >= 0, caps = {drop: 4, half: 4, spark: 2, quarter: 5, accel: 6, freeze: 2, echo: 4, end: 1};
-    const cap = inP ? (b >= 0 ? caps[plan.roles[b]] || 3 : 1) : (mv >= .9 ? 2 : 1), gap = inP ? Math.max(P / 2, .2) : 2 * P, used = this.perBar.get(b) || 0;
+    const inP = inRun(plan, te) >= 0;
+    const cap = inP ? (b >= 0 ? CAPS[plan.roles[b]] || 3 : 1) : (mv >= .9 ? 2 : 1), gap = inP ? Math.max(P / 2, .2) : 2 * P, used = this.perBar.get(b) || 0;
     if (!forced && (used >= cap || te - this.lastT < gap - 1e-6)) return;
-    // best pose of the last few frames
+    // best pose of the last few camera frames
     let best = -1, bs = -1e9;
     for (let q = Math.max(0, f - 3); q <= f; q++) { const s = V.stats[q]; if (!s || !s.ok || (V.area[q] || 0) < .01) continue;
       const sc = .6 * V.area[q] / this.amax + .4 * s.desc[s.desc.length - 1] - .3 * Math.min(1, this.envAt(q) / 2); if (sc > bs) { bs = sc; best = q; } }
     if (best < 0 || !V.dm[best]) return;
     const desc = V.stats[best].desc, novel = !this.lastDesc || descDist(desc, this.lastDesc) >= .08;
     if (!novel && !forced && !(down && te - this.lastT >= 4 * P)) return;
-    const g = this.maker(plan.ghosts, {t: te, beat, move, down: down ? 1 : 0, forced}, best, false);
-    const sb = slabBase(V, g.di, g.style); this.stage.addGhostLive(g, sb.inst, sb.count);
-    ghostFades(plan.ghosts, this.endT, P, plan.dur);
+    const g = this.maker(this.ghosts, {t: te, beat, move, down: down ? 1 : 0, forced}, best, false), sb = slabBase(V, g.di, g.style);
+    Object.assign(g, {inst: sb.inst, cnt: sb.count, cut: !!V.cut[best], bar: b, desc});     // a printed ghost keeps its own data
+    this.stage.addGhostLive(g, sb.inst, sb.count);
+    ghostFades(this.ghosts, this.endT, P, plan.dur);
     this.lastDesc = desc; this.lastT = te; this.perBar.set(b, used + 1);
   }
 }
@@ -238,41 +287,52 @@ export function liveFx(A) {
   for (const b of bars) { const v = b.e < lo ? .75 : 1; if (b.t > .05 && b.t < dur - .05 && Math.abs(keys[keys.length - 1].v - v) > 1e-6) keys.push({t: b.t, v}); }
   keys.push({t: dur, v: 1}); return keys;
 }
-/** the plan of a live take: the whole song from 0:00, plates runs and shots from the music alone. */
+/** the live plan: the whole song, plates runs and shots from the music alone. */
 export function livePlan(A, V, opts) {
   const db = A.bars && A.bars.length ? A.bars[0].t : null, grid = gridFor(A, 0, A.duration, db);
   return makePlan(grid, A.duration, V, {...opts, live: true});
 }
-/** MediaRecorder's WebM has no duration, so players can't seek it: write Segment/Info/Duration (ms, float64) into the header. */
-export async function fixWebmDuration(blob, ms) {
-  const head = new Uint8Array(await blob.slice(0, Math.min(blob.size, 1 << 16)).arrayBuffer());
-  const vint = (p, isId) => { const b = head[p]; let len = 1, m = 0x80; while (len <= 8 && !(b & m)) { m >>= 1; len++; }
-    let v = isId ? b : b & (m - 1), ones = (b & (m - 1)) === m - 1; for (let i = 1; i < len; i++) { v = v * 256 + head[p + i]; ones = ones && head[p + i] === 255; } return {v, len, unknown: !isId && ones}; };
-  let p = 0; const ebml = vint(p, true); if (ebml.v !== 0x1A45DFA3) return blob;
-  const es = vint(p + ebml.len); p += ebml.len + es.len + es.v;
-  const seg = vint(p, true); if (seg.v !== 0x18538067) return blob;
-  const ss = vint(p + seg.len); p += seg.len + ss.len;
-  while (p < head.length - 12) {
-    const id = vint(p, true), sz = vint(p + id.len), body = p + id.len + sz.len;
-    if (id.v === 0x1549A966) {                                  // Info
-      for (let q = body; q < body + sz.v;) { const cid = vint(q, true), cs = vint(q + cid.len); if (cid.v === 0x4489) return blob; q += cid.len + cs.len + cs.v; }
-      const dur = new Uint8Array(11); dur.set([0x44, 0x89, 0x88]); new DataView(dur.buffer).setFloat64(3, ms);
-      const nsz = new Uint8Array(8); nsz[0] = 1; let v = sz.v + 11; for (let i = 7; i >= 1; i--) { nsz[i] = v & 255; v = Math.floor(v / 256); }
-      return new Blob([head.slice(0, p + id.len), nsz, head.slice(body, body + sz.v), dur, blob.slice(body + sz.v)], {type: blob.type});
-    }
-    if (sz.unknown) return blob; p = body + sz.v;
-  }
-  return blob;
-}
-const MIMES = ['video/mp4;codecs=avc1.42E01F,mp4a.40.2', 'video/mp4;codecs=avc1.42E01F,opus', 'video/webm;codecs=h264,opus', 'video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm'];
-export const recorderMime = () => MIMES.find(m => { try { return MediaRecorder.isTypeSupported(m); } catch (e) { return false; } }) || '';
 
-/**
- * A live take: camera + analyzer + bundle + director + song clock + render loop (+ recorder).
- * ui: {onCount(sec), onTime(t, dur), onState(state), onRecorded({blob, ext, mime}), log}
- */
+/** the live pipeline without the camera and audio plumbing (what the tests drive): camera frames in, a song time out.
+ *  Footage runs on camera time (never rewinds); the edit runs on song time (play, pause, seek). */
+export class LiveCore {
+  constructor(R, {w, h, aw, ah, mode = 'pose', A, opts, fx}) {
+    this.R = R; this.mode = mode; this.A = A; this.dur = A.duration;
+    this.V = new LiveBundle({w, h, aw, ah}); this.V.info.seg = mode;
+    this.dir = new LiveDirector(this.V, R.stage, {seed: opts.seed || 1, dur: this.dur});
+    this.dirty = true; this.fresh = false;
+    this.replan(opts, fx);
+  }
+  /** settings changed: a new plan in place (the ring, the camera frames and every integrator carry over) */
+  replan(opts, fx) {
+    const luma = this.mode === 'luma', plan = livePlan(this.A, this.V, {...opts, scene: luma ? 'dots' : opts.scene});
+    if (luma && opts.scene !== 'dots') plan.sceneNote = 'plates need person detection, showing dots';
+    plan.fx = (fx || [{t: 0, v: 1}, {t: this.dur, v: 1}]).map(k => ({t: k.t, v: k.v}));
+    this.dir.setPlan(plan); this.plan = plan;
+    this.R.setData(this.V, plan, LIVE_FPS);
+    this.dirty = true; return plan;
+  }
+  /** an analysed camera frame (ci: camera frame index, increasing) */
+  pushFrame(ci, src, r) {
+    const V = this.V, from = V.n; V.push(ci, r); this.R.pushLiveFrame(ci, src, r.dm, from); this.dir.frame(ci);
+    if (ci - V.pruned > 960) V.prune(ci - 900, this.R.livePinned());
+    this.fresh = true;
+  }
+  seek(t) { this.dir.seek(clamp(t, 0, this.dur)); this.R.releaseLivePins(); this.dirty = true; }
+  /** draw song time t with the newest camera frame */
+  async render(t) {
+    const V = this.V; if (!V.n) return null;
+    this.dir.update(t, V.n - 1); this.dirty = this.fresh = false;
+    return this.R.renderAt(Math.floor(t * LIVE_FPS + 1e-6) / LIVE_FPS);
+  }
+}
+
+/** webcam + song transport. The camera is always live; Play / Pause / seek move the song, and the edit at that point
+ *  is applied to the live dancer. Settings re-plan in place (replan). */
 export class LiveSession {
-  constructor(renderer, ui = {}) { this.R = renderer; this.ui = ui; this.log = ui.log || (() => {}); this.state = 'idle'; }
+  constructor(renderer, ui = {}) { this.R = renderer; this.ui = ui; this.log = ui.log || (() => {}); this.state = 'idle'; this.playing = false; this.renders = 0; }
+  get plan() { return this.core ? this.core.plan : null; }
+  get V() { return this.core ? this.core.V : null; }
   async openCamera(videoEl, deviceId) {
     this.closeCamera();
     const c = {width: {ideal: 1280}, height: {ideal: 720}, frameRate: {ideal: 30}, ...(deviceId ? {deviceId: {exact: deviceId}} : {facingMode: 'user'})};
@@ -288,96 +348,92 @@ export class LiveSession {
     if (!this.an || this.an.w !== this.w || this.an.h !== this.h) { this.an?.close(); this.an = new LiveAnalyzer({w: this.w, h: this.h, segmenter, log: this.log}); this.mode = await this.an.init(); }
     return this.mode;
   }
-  /** start a take: count-in, then the song from 0:00. */
-  async start({songBuf, A, opts, fx, record = false, countIn = 3}) {
-    await this.stop(false);
-    const an = this.an, R = this.R, V = this.V = new LiveBundle({w: this.w, h: this.h, aw: an.aw, ah: an.ah}); an.reset();
-    const scene = this.mode === 'luma' ? 'dots' : opts.scene;
-    const plan = this.plan = livePlan(A, V, {...opts, scene});
-    if (this.mode === 'luma' && opts.scene !== 'dots') plan.sceneNote = 'plates need person detection, showing dots';
-    plan.fx = (fx || [{t: 0, v: 1}, {t: A.duration, v: 1}]).map(k => ({t: k.t, v: k.v}));
-    R.setData(V, plan, LIVE_FPS);
-    this.dir = new LiveDirector(plan, V, R.stage); V.info.seg = this.mode;
+  /** go live, paused at song time `at`; the song starts once the stage is calibrated (or after 1.5 s) */
+  async start({songBuf, A, opts, fx, at = 0}) {
+    await this.stop();
+    const an = this.an; an.reset();
+    const core = this.core = new LiveCore(this.R, {w: this.w, h: this.h, aw: an.aw, ah: an.ah, mode: this.mode, A, opts, fx});
+    if (this.mode !== 'luma') { try { this.R.stage.ensure(); } catch (e) {} }          // compile the stage now, not mid-song
+    this.dur = A.duration; this.songBuf = songBuf; this.off = clamp(at, 0, this.dur); this.lastT = this.off; core.seek(this.off);
     this.colour = new OffscreenCanvas(this.w, this.h); this.cx = this.colour.getContext('2d');
-    this.dur = A.duration; this.lastFi = -1; this.rendered = -1; this.cal = []; this.lat = []; this.frameMs = []; this.degraded = 0;
-    // one clock: the song time the performer hears. Frames are tagged with it at capture.
-    const ac = this.ac = new AudioContext(); await ac.resume();
-    const src = this.src = ac.createBufferSource(); src.buffer = songBuf; src.connect(ac.destination);
-    if (record) { this.dest = ac.createMediaStreamDestination(); this.delay = ac.createDelay(2); src.connect(this.delay); this.delay.connect(this.dest); }
-    this.t0 = ac.currentTime + countIn; src.start(this.t0); src.onended = () => { if (this.state === 'live') this.finish('song ended'); };
-    this.record = record; this.state = 'countin'; this.ui.onState?.('countin');
-    this.vis = () => { if (document.hidden && this.state !== 'idle') this.finish('the tab was hidden'); };
+    this.ac = new AudioContext(); await this.ac.resume();
+    this.cap0 = null; this.lastCi = -1; this.frameMs = []; this.rms = []; this.degraded = 0; this.renders = 0; this.lastN = -1;
+    this.autoT = performance.now(); this.autoPlay = true; this.playing = false; this.R.hold = true;
+    this.state = 'live'; this.ui.onState?.('live');
+    this.vis = () => { if (document.hidden) this.pause(); };
     document.addEventListener('visibilitychange', this.vis);
     const onFrame = (now, md) => { if (this.state === 'idle') return; try { this.capture(md && md.captureTime ? md.captureTime : (md && md.expectedDisplayTime) || now); } catch (e) { this.log('live: ' + e.message); } this.vcb = this.video.requestVideoFrameCallback(onFrame); };
     this.vcb = this.video.requestVideoFrameCallback(onFrame);
-    const tick = () => { if (this.state === 'idle') return; this.loop().catch(e => this.log('live render: ' + e.message)).finally(() => { this.raf = requestAnimationFrame(tick); }); };
+    const tick = () => { if (this.state === 'idle') return; this.loop().catch(e => this.log('live render: ' + e.message)).finally(() => { if (this.state !== 'idle') this.raf = requestAnimationFrame(tick); }); };
     this.raf = requestAnimationFrame(tick);
-    return plan;
+    return core.plan;
   }
+  replan(opts, fx) { if (this.state === 'idle' || !this.core) return null; return this.core.replan(opts, fx); }
+  /** the song position the performer hears */
   heard(perfMs) {
-    const ac = this.ac; let t;
-    if (ac.getOutputTimestamp) { const o = ac.getOutputTimestamp(); t = o.contextTime + (perfMs - o.performanceTime) / 1000; }
-    else t = ac.currentTime - (ac.outputLatency || 0) + (perfMs - performance.now()) / 1000;
-    return t - this.t0;
+    const ac = this.ac; let c;
+    if (ac.getOutputTimestamp) { const o = ac.getOutputTimestamp(); c = o.contextTime > 0 ? o.contextTime + (perfMs - o.performanceTime) / 1000 : ac.currentTime; }
+    else c = ac.currentTime - (ac.outputLatency || 0) + (perfMs - performance.now()) / 1000;
+    return c - this.t0;
   }
+  time() {
+    if (!this.playing) return this.off;
+    this.lastT = clamp(Math.max(this.lastT, this.heard(performance.now())), this.off, this.dur); return this.lastT;
+  }
+  play() {
+    if (this.state !== 'live' || this.playing) return;
+    this.autoPlay = false; if (this.off >= this.dur - .05) this.seek(0);
+    const ac = this.ac, src = ac.createBufferSource(); src.buffer = this.songBuf; src.connect(ac.destination);
+    const when = ac.currentTime + .03; src.start(when, this.off); this.t0 = when - this.off;
+    src.onended = () => { if (src !== this.src || !this.playing) return; this.src = null; this.playing = false; this.off = this.dur; this.R.hold = true; this.core.dirty = true; this.ui.onState?.('paused'); };
+    this.src = src; this.playing = true; this.lastT = this.off; this.R.hold = false; this.core.dirty = true; this.ui.onState?.('playing');
+  }
+  pause() {
+    this.autoPlay = false; if (!this.playing) return;
+    this.off = this.time(); this.playing = false; this.killSrc(); this.R.hold = true; this.core.dirty = true; this.ui.onState?.('paused');
+  }
+  /** move the song to t (keeps playing if it was) */
+  seek(t) {
+    if (this.state !== 'live' || !this.core) return;
+    const was = this.playing; if (was) { this.killSrc(); this.playing = false; }
+    this.off = this.lastT = clamp(t, 0, this.dur); this.core.seek(this.off);
+    if (was) this.play();
+  }
+  killSrc() { const s = this.src; this.src = null; if (s) { s.onended = null; try { s.stop(); } catch (e) {} } }
   capture(capMs) {
-    const t = this.heard(capMs);
+    if (this.cap0 == null) this.cap0 = capMs;
+    let ci = Math.max(this.lastCi + 1, Math.floor((capMs - this.cap0) * LIVE_FPS / 1000));
+    if (ci - this.lastCi > 15) { ci = this.lastCi + 1; this.cap0 = capMs - ci * 1000 / LIVE_FPS; }     // back from a hidden tab: no backlog
     this.cx.setTransform(-1, 0, 0, 1, this.w, 0); this.cx.drawImage(this.video, 0, 0, this.w, this.h); this.cx.setTransform(1, 0, 0, 1, 0, 0);
     const t1 = performance.now(), r = this.an.analyze(this.colour, this.video, capMs, {mirror: true});
     this.frameMs.push(performance.now() - t1); if (this.frameMs.length > 90) this.frameMs.shift();
-    this.lat.push(performance.now() - capMs); if (this.lat.length > 60) this.lat.shift();
-    if (t < 0) { if (r.stats.ok) { this.cal.push(r); if (this.cal.length > 90) this.cal.shift(); } return; }
-    if (!this.V.calibrated && this.cal.length) { this.V.calibrate(this.cal); this.an.hRef = this.V.hRef || 0; }
-    const fi = Math.floor(t * LIVE_FPS); if (fi <= this.lastFi) return;
-    const from = this.lastFi + 1; this.V.push(fi, r); this.R.pushLiveFrame(fi, this.colour, r.dm, from); this.dir.frame(fi); this.lastFi = fi;
-    if (!this.an.hRef && this.V.hRef) this.an.hRef = this.V.hRef;
+    this.core.pushFrame(ci, this.colour, r); this.lastCi = ci;
+    if (!this.an.hRef && this.core.V.hRef) this.an.hRef = this.core.V.hRef;
   }
   async loop() {
-    const now = performance.now(), t = this.heard(now);
-    if (this.state === 'countin') { this.ui.onCount?.(Math.ceil(-t)); if (this.lastFi >= 0) { this.state = 'live'; this.ui.onCount?.(0); this.ui.onState?.('live'); if (this.record) this.startRecorder(); } return; }
-    if (this.state !== 'live') return;
-    if (t >= this.dur) { this.finish('song ended'); return; }
-    if (this.lastFi === this.rendered) return;
-    const fi = this.lastFi, t0 = performance.now();
-    this.dir.update(fi / LIVE_FPS); await this.R.renderAt(fi / LIVE_FPS); this.rendered = fi;
-    this.ui.onTime?.(fi / LIVE_FPS, this.dur);
+    const core = this.core; if (!core.V.n) return;
+    if (this.autoPlay && (core.V.calibrated || performance.now() - this.autoT > 1500)) this.play();
+    const t = this.time(), n = Math.floor(t * LIVE_FPS + 1e-6);
+    if (n === this.lastN && !core.fresh && !core.dirty) return;
+    const t0 = performance.now(); await core.render(t); this.lastN = n; this.renders++;
+    this.ui.onTime?.(t, this.dur);
     this.autoDegrade(performance.now() - t0);
   }
   /** keep 30 fps: drop MSAA and the dancer's reflection, then segment every other frame */
   autoDegrade(renderMs) {
-    (this.rms = this.rms || []).push(renderMs); if (this.rms.length < 45) return;
+    this.rms.push(renderMs); if (this.rms.length < 45) return;
     const avg = this.rms.reduce((a, b) => a + b, 0) / this.rms.length + this.frameMs.reduce((a, b) => a + b, 0) / Math.max(1, this.frameMs.length); this.rms = [];
     if (avg < 30 || this.degraded >= 2) return;
     this.degraded++;
     if (this.degraded === 1) { this.R.stageQ = {...(this.R.stageQ || {}), samples: 0, mirrorDancer: 0}; if (this.R.stage.ok) { this.R.stage.free(); this.R.stage.resize(this.R.W, this.R.H); } this.log(`live: ${avg.toFixed(0)} ms/frame, lighter stage (no MSAA, no dancer reflection)`); }
     else { this.an.skip = true; this.log(`live: ${avg.toFixed(0)} ms/frame, person detection on every other frame`); }
   }
-  startRecorder() {
-    const lat = [...this.lat].sort((a, b) => a - b), med = lat.length ? lat[lat.length >> 1] / 1000 : .05;
-    this.L = clamp((this.ac.outputLatency || this.ac.baseLatency || .02) + med + 1 / LIVE_FPS, 0, 1.5); this.delay.delayTime.value = this.L;
-    const mime = this.mime = recorderMime(), vs = this.R.cv.captureStream(LIVE_FPS), ms = new MediaStream([...vs.getVideoTracks(), ...this.dest.stream.getAudioTracks()]);
-    const bps = Math.round(this.R.W * this.R.H * LIVE_FPS * .3);
-    try { this.rec = new MediaRecorder(ms, mime ? {mimeType: mime, videoBitsPerSecond: bps} : {videoBitsPerSecond: bps}); }
-    catch (e) { this.log('live: recording unavailable (' + e.message + ')'); this.rec = null; return; }
-    this.chunks = []; this.rec.ondataavailable = e => { if (e.data && e.data.size) this.chunks.push(e.data); };
-    this.rec.start(1000); this.recT0 = performance.now(); this.ui.onState?.('recording');
-    this.log(`live: recording ${mime || 'default format'}, audio delayed ${(this.L * 1000).toFixed(0)} ms to match the picture`);
-  }
-  recSeconds() { return this.rec ? (performance.now() - this.recT0) / 1000 : 0; }
-  finish(why) { if (this.state === 'idle') return; this.log('live: take ended (' + why + ')'); this.stop(true); }
-  /** end the take; when recording, the file is delivered through ui.onRecorded */
-  async stop(save = true) {
+  /** leave live (the camera preview stays on) */
+  async stop() {
     if (this.state === 'idle') return; this.state = 'idle';
     cancelAnimationFrame(this.raf); if (this.video && this.vcb != null) this.video.cancelVideoFrameCallback?.(this.vcb);
     document.removeEventListener('visibilitychange', this.vis);
-    const rec = this.rec; this.rec = null;
-    const done = rec ? new Promise(res => { rec.onstop = res; }) : null;
-    if (rec) await new Promise(r => setTimeout(r, (this.L || 0) * 1000 + 150));      // let the delayed audio catch up
-    try { this.src?.stop(); } catch (e) {}
-    if (rec) { try { rec.stop(); } catch (e) {} await done;
-      if (save && this.chunks.length) { const type = rec.mimeType || this.mime || 'video/webm', mp4 = /mp4/.test(type); let blob = new Blob(this.chunks, {type});
-        if (!mp4) blob = await fixWebmDuration(blob, (performance.now() - this.recT0)).catch(() => blob);
-        this.ui.onRecorded?.({blob, ext: mp4 ? 'mp4' : 'webm', mime: type}); } }
+    this.killSrc(); this.playing = false; this.R.hold = false; this.R.releaseLivePins?.();
     try { await this.ac?.close(); } catch (e) {}
     this.ac = null; this.ui.onState?.('idle');
   }

@@ -124,10 +124,12 @@ export class Stage {
     if (!this.need) { this.release(); return; }
     if (!this.ensure()) return;
     const gl = this.gl, fit = this.fit = stageFit(V), segs = new Map(), parts = []; let off = 0;
-    if (V.live) {                     // live: ghosts arrive during the take, each in a fixed slot of a preallocated buffer
-      this.cut = V.cut; this.gseg = []; this.dposT = null;
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.bInst); gl.bufferData(gl.ARRAY_BUFFER, LIVE_SLOTS * LIVE_SLABS * 32, gl.DYNAMIC_DRAW); gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    if (V.live) {                     // live: ghosts arrive as the song plays, each in a fixed slot of a buffer allocated once per session
+      this.cut = V.cut; this.dposT = null;
+      if (this.liveV !== V) { gl.bindBuffer(gl.ARRAY_BUFFER, this.bInst); gl.bufferData(gl.ARRAY_BUFFER, LIVE_SLOTS * LIVE_SLABS * 32, gl.DYNAMIC_DRAW); gl.bindBuffer(gl.ARRAY_BUFFER, null); this.liveV = V; }
+      this.restoreLive(plan.ghosts || []);
     } else {
+      this.liveV = null;
       this.cut = poseStats(V).map(s => !!(s.ok && s.cut));
       this.gseg = plan.ghosts.map(g => {
         const key = g.di + '|' + g.style;
@@ -148,10 +150,15 @@ export class Stage {
   }
   /** a ghost printed during a live take: its slabs go into slot i % 32 (the cap and the collapse keep slots from clashing) */
   addGhostLive(g, inst, count) {
-    if (!this.ok || !this.V || !this.V.live) return;
+    if (!this.ok || !this.V || !this.V.live || this.liveV !== this.V) return;       // (the slot buffer exists once a stage plan was built)
     const gl = this.gl, slot = g.i % LIVE_SLOTS, cnt = Math.min(count, LIVE_SLABS);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.bInst); gl.bufferSubData(gl.ARRAY_BUFFER, slot * LIVE_SLABS * 32, inst.subarray(0, cnt * 8)); gl.bindBuffer(gl.ARRAY_BUFFER, null);
     this.gseg[g.i] = {off: slot * LIVE_SLABS, cnt};
+  }
+  /** re-upload the live ghosts that can still be on screen (the newest one per slot) after a rebuild or a seek */
+  restoreLive(ghosts) {
+    this.gseg = []; if (!this.ok || !this.V || !this.V.live || this.liveV !== this.V) return;
+    for (const g of ghosts.slice(-LIVE_SLOTS)) if (g.inst) this.addGhostLive(g, g.inst, g.cnt);
   }
   /** camera target: smoothed dancer position (precomputed offline, a causal per-frame track live) */
   dposAt(n) { if (this.V.live) { const a = this.V.dposS; return a[clamp(this.r.footageF(n), 0, a.length - 1)] || [0, 0, 0]; } return this.dposT[clamp(n, 0, this.dposT.length - 1)]; }
@@ -199,8 +206,8 @@ export class Stage {
   newestSpawn(t) { let nw = null; for (const g of this.plan.ghosts) if (!g.seeded && g.t <= t && t - g.t < .6 && !g.hidden) nw = g.t; return nw; }
   VP(c) { return mm(persp(c.fov, this.r.W / this.r.H, .05, 60), lookAt(c.eye, add(c.eye, c.fw), c.up)); }
   /** the dancer's points: billboard yaw about the feet + a backward tilt for high cameras (also the yaw a fresh ghost starts from). */
-  dancerPose(n, cam) {
-    const d = this.dancerAt(n), p = d.pos, ex = cam.eye[0] - p[0], ez = cam.eye[2] - p[2];
+  dancerPose(n, cam, at = null) {
+    const d = this.dancerAt(n), p = at || d.pos, ex = cam.eye[0] - p[0], ez = cam.eye[2] - p[2];
     const yaw = .85 * Math.atan2(ex, ez), elev = Math.atan2(cam.eye[1] - 1, Math.hypot(ex, ez));
     return {...d, yaw, tilt: .8 * elev * smoothstep(40 * DEG, 70 * DEG, elev)};
   }
@@ -226,7 +233,7 @@ export class Stage {
     for (const x of live) {
       const face = x.slotA + x.g.yawOff;
       // a fresh ghost starts in the dancer's billboard pose at its spawn frame (yaw and high-camera tilt), then settles upright
-      if (x.u < 1) { const sn = Math.max(0, Math.floor(x.g.t * fps + 1e-6)), d0 = this.dancerPose(sn, this.camAt(sn)); x.yaw = angLerp(d0.yaw, face, x.u) + x.spinA; x.tilt = d0.tilt * (1 - x.u); }
+      if (x.u < 1) { const sn = Math.max(0, Math.floor(x.g.t * fps + 1e-6)), d0 = this.dancerPose(sn, this.camAt(sn), this.V.live ? x.g.root : null); x.yaw = angLerp(d0.yaw, face, x.u) + x.spinA; x.tilt = d0.tilt * (1 - x.u); }
       else { x.yaw = face + x.spinA; x.tilt = 0; }
     }
     const dpose = this.dancerPose(n, cam), dpos = dpose.pos;
@@ -347,8 +354,8 @@ export class Stage {
       const seg = this.gseg[x.g.i], S = STYLES[x.g.style] || STYLES.bar;
       if (additive && x.depthOff) gl.disable(gl.DEPTH_TEST); else gl.enable(gl.DEPTH_TEST);
       gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 32, seg.off * 32); gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 32, seg.off * 32 + 16);
-      gl.uniform3fv(U('uGPos'), x.pos); gl.uniform1f(U('uGYaw'), x.yaw); gl.uniform1f(U('uGTilt'), x.tilt || 0); gl.uniform1f(U('uCut'), this.cut[x.g.di] ? 1 : 0); gl.uniform1f(U('uAge'), x.g.seeded ? 9 : x.age); gl.uniform1f(U('uColl'), x.coll);
-      gl.uniform1f(U('uSxz'), sxz); gl.uniform1f(U('uN'), S.n); gl.uniform1f(U('uRh'), S.rh); gl.uniform1f(U('uStyle'), S.id); gl.uniform1f(U('uSeed'), hsh(x.g.i * 3.17 + this.plan.seed));
+      gl.uniform3fv(U('uGPos'), x.pos); gl.uniform1f(U('uGYaw'), x.yaw); gl.uniform1f(U('uGTilt'), x.tilt || 0); gl.uniform1f(U('uCut'), (x.g.cut ?? this.cut[x.g.di]) ? 1 : 0); gl.uniform1f(U('uAge'), x.g.seeded ? 9 : x.age); gl.uniform1f(U('uColl'), x.coll);
+      gl.uniform1f(U('uSxz'), sxz); gl.uniform1f(U('uN'), S.n); gl.uniform1f(U('uRh'), S.rh); gl.uniform1f(U('uStyle'), S.id); gl.uniform1f(U('uSeed'), hsh(x.g.i * 3.17 + (x.g.seed ?? this.plan.seed)));
       gl.uniform1f(U('uTwist'), .12 * x.calm);
       gl.uniform3fv(U('uAlb'), hex(m.alb)); gl.uniform3fv(U('uSpec'), hex(m.spec)); gl.uniform3fv(U('uRimC'), hex(m.rim)); gl.uniform1f(U('uGloss'), m.gloss); gl.uniform1f(U('uRimK'), m.rk); gl.uniform1f(U('uMetal'), m.metal);
       const E = x.E * (x === newest ? 1.25 : 1) * (1 + .25 * ctx.kick) * emis;

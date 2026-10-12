@@ -41,7 +41,8 @@ export class DotRenderer {
     this.stage = new Stage(this);
     this.NS = 5; this.tRaw = []; this.tD = []; this.lr = []; this.ld = [];
     for (let i = 0; i < this.NS; i++) { this.tRaw.push(this.tex(4, 4, gl.LINEAR, true)); this.tD.push(this.tex(4, 4, gl.NEAREST)); this.lr.push(-1); this.ld.push(-1); }
-    this.tRaw0 = this.tRaw.slice(); this.tD0 = this.tD.slice(); this.pool = null;
+    this.tRaw0 = this.tRaw.slice(); this.tD0 = this.tD.slice(); this.pool = null; this.livePins = new Map(); this.liveN = 0;
+    this.hold = false;            // live webcam, song paused: hold the picture calm (no 1-frame strobes, flashes or kick shake)
     this.bmpCache = new Map(); this.fps = 30;
   }
   tex(w, h, filt, mip) { const gl = this.gl, t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
@@ -72,13 +73,13 @@ export class DotRenderer {
     this.fly = plan.fly ? {f0: ef(plan.fly.t0), f1: ef(plan.fly.t1)} : null;
     this.swings = plan.swings.map(s => ({...s, f: ef(s.t)})); this.barCam = plan.barCam;
     this.SF = SF;
-    if (video && video.live) this.livePool(newClip); else { this.tRaw = this.tRaw0.slice(); this.tD = this.tD0.slice(); }
+    if (video && video.live) this.livePool(newClip); else { this.tRaw = this.tRaw0.slice(); this.tD = this.tD0.slice(); this.hold = false; }
     this.stage.build(video, plan, fps);
     if (this.stage.need && this.stage.ok && this.W) this.stage.resize(this.W, this.H);
   }
   /** the schedule entry on screen at frame n (strobes are skipped where the fade lane is quiet) */
   evAt(n) {
-    const g = effectAt(this.plan.fx, n / this.fps), quiet = g < 0.2;
+    const g = effectAt(this.plan.fx, n / this.fps), quiet = g < 0.2 || this.hold;
     let ev = this.ev[0] || {look: 'led', pitch: 14, strobe: false};
     for (const e of this.ev) if (e.f <= n && !(quiet && e.strobe)) ev = e;
     if (quiet && ev.strobe) {
@@ -96,6 +97,7 @@ export class DotRenderer {
   }
   footageF(n) {
     const V = this.V, fz = this.fz;
+    if (V.live) return this.liveSrc(n);
     if (fz && n >= fz.f0 && n < fz.f1) return Math.min(V.n - 1, fz.frame);
     for (const h of this.holds) if (n >= h.f0 && n < h.f1) return Math.min(V.n - 1, Math.floor(h.f0 / this.fps * V.fps));
     return clamp(Math.floor(n / this.fps * V.fps), 0, V.n - 1);
@@ -145,18 +147,38 @@ export class DotRenderer {
     return m ? s / m * (1080 / H) : 0; }
   async bitmap(fi) { if (this.bmpCache.has(fi)) return this.bmpCache.get(fi); const b = await createImageBitmap(this.V.frames[fi]); this.bmpCache.set(fi, b);
     if (this.bmpCache.size > 24) { const k = this.bmpCache.keys().next().value; this.bmpCache.get(k).close?.(); this.bmpCache.delete(k); } return b; }
-  // ---- live (webcam): every captured frame is uploaded once into a pool of GPU textures; load() just points at them
+  // ---- live (webcam): footage runs on camera time, the edit on song time. Every captured frame is uploaded once into a
+  // pool of GPU textures (indexed by camera frame) and load() just points at them. The frame on screen is the newest one;
+  // earlier song frames (trails, motion blur) are the camera's recent history; a freeze or hold shows a snapshot taken
+  // when the song first enters it (pinned in the pool until the song leaves it).
   livePool(reset) {
     const gl = this.gl, N = 16;
-    if (!this.pool) { this.pool = {slots: [], map: new Map(), next: 0}; for (let i = 0; i < N; i++) this.pool.slots.push({raw: this.tex(4, 4, gl.LINEAR, true), d: this.tex(4, 4, gl.NEAREST), fi: -1}); }
+    if (!this.pool) { this.pool = {slots: [], map: new Map(), next: 0}; for (let i = 0; i < N; i++) this.pool.slots.push({raw: this.tex(4, 4, gl.LINEAR, true), d: this.tex(4, 4, gl.NEAREST), fi: -1, pinned: false}); }
+    this.releaseLivePins();
     if (reset) { this.pool.map.clear(); this.pool.next = 0; for (const s of this.pool.slots) s.fi = -1; }
-    // frames the edit shows later (freeze, holds) stay pinned until their window has passed
-    this.pins = new Map(); if (this.fz) this.pins.set(this.fz.frame, this.fz.f1);
-    for (const h of this.holds) this.pins.set(Math.floor(h.f0 / this.fps * 30), h.f1);
   }
+  liveWin(n) {
+    const fz = this.fz; if (fz && n >= fz.f0 && n < fz.f1) return 'fz';
+    for (let k = 0; k < this.holds.length; k++) { const h = this.holds[k]; if (n >= h.f0 && n < h.f1) return 'h' + k; }
+    return null;
+  }
+  /** camera frame for song frame n, relative to the frame being drawn (liveN): -1 before the first camera frame */
+  liveSrc(n) {
+    const top = this.V.n - 1; if (top < 0) return -1;
+    const w = this.liveWin(n), p = w && this.livePins.get(w); if (p) return Math.min(top, p.ci);
+    return clamp(top - Math.round(this.liveN - n), 0, top);
+  }
+  /** start of a live frame: pin the snapshot of a freeze / hold window the song is in, release the others */
+  liveTick(n) {
+    this.liveN = n; const w = this.liveWin(n);
+    for (const [k, p] of this.livePins) if (k !== w) { p.slot.pinned = false; this.livePins.delete(k); }
+    if (w && !this.livePins.has(w)) { const ci = this.V.n - 1, s = this.liveFrame(ci); if (s) { s.pinned = true; this.livePins.set(w, {ci, slot: s}); } }
+  }
+  releaseLivePins() { for (const p of this.livePins.values()) p.slot.pinned = false; this.livePins.clear(); }
+  livePinned() { return new Set([...this.livePins.values()].map(p => p.ci)); }
   pushLiveFrame(fi, src, dm, fromFi = fi) {
     const gl = this.gl, P = this.pool, V = this.V; let s = null;
-    for (let k = 0; k < P.slots.length && !s; k++) { const c = P.slots[(P.next + k) % P.slots.length]; if (!((this.pins.get(c.fi) ?? -1) > fi)) { s = c; P.next = (P.next + k + 1) % P.slots.length; } }
+    for (let k = 0; k < P.slots.length && !s; k++) { const c = P.slots[(P.next + k) % P.slots.length]; if (!c.pinned) { s = c; P.next = (P.next + k + 1) % P.slots.length; } }
     if (!s) { s = P.slots[P.next]; P.next = (P.next + 1) % P.slots.length; }
     for (const [k, v] of P.map) if (v === s) P.map.delete(k);
     gl.activeTexture(gl.TEXTURE0);
@@ -173,7 +195,9 @@ export class DotRenderer {
 
   async renderAt(t) {
     const gl = this.gl, fps = this.fps, W = this.W, H = this.H, V = this.V, I = this.plan.intensity;
-    const n = Math.round(t * fps), SF = this.SF, g = effectAt(this.plan.fx, n / fps), quiet = g < 0.2;
+    const n = Math.round(t * fps), SF = this.SF, g = effectAt(this.plan.fx, n / fps), quiet = g < 0.2 || this.hold;
+    if (V.live) { if (!V.n) { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, W, H); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); return {n, fi: -1, look: 'none'}; }
+      this.liveTick(n); }
     const ev = this.evAt(n);
     let L = LOOKS[ev.look] || LOOKS.led;
     if (L.st) { if (this.stageOn(n)) return this.renderStage(n, ev, L, g); L = LOOKS[L.st.fallback] || LOOKS.mono; }
@@ -182,7 +206,7 @@ export class DotRenderer {
     const held = this.holds.some(h => n >= h.f0 && n < h.f1);
     const cam = this.camAt(n);
     const ka = cam.kb >= 0 ? (n - this.beatF[cam.kb]) / fps : 9;
-    const kick = held ? 0 : Math.exp(-ka / .05) * Math.min(1.3, I) * g;
+    const kick = held || this.hold ? 0 : Math.exp(-ka / .05) * Math.min(1.3, I) * g;
     const swell = 1 + (cam.isBar ? .5 : .3) * kick;
     const echoAge = lastAge(this.echoF), echoHit = (echoAge < .35 ? Math.exp(-echoAge / .12) : 0) * g;
     const detAge = lastAge(this.detF);
@@ -191,7 +215,7 @@ export class DotRenderer {
     if (rf && n >= rf.f0 && n < rf.f1) { det = n < rf.fm ? easeOut((n - rf.f0) / Math.max(1, rf.fm - rf.f0)) * .95 : .95 * (1 - easeIO((n - rf.fm) / Math.max(1, rf.f1 - rf.fm))); detFade = 1; }
     det *= g;
     const fz = this.fz && n >= this.fz.f0 && n < this.fz.f1;
-    let fl = null; for (const x of this.flash) { if (quiet && x.burst) continue; if (n === x.f) fl = {c: x.c, s: x.s}; else if (n > x.f && n <= x.f + SF && !fl) fl = {c: x.c, s: x.s * .25}; }
+    let fl = null; if (!this.hold) for (const x of this.flash) { if (quiet && x.burst) continue; if (n === x.f) fl = {c: x.c, s: x.s}; else if (n > x.f && n <= x.f + SF && !fl) fl = {c: x.c, s: x.s * .25}; }
     const echoLook = !!L.echo, echoN = echoLook ? 4 : (echoHit > 0 ? 3 : 0);
     await this.load(0, fi); for (let k = 1; k <= echoN; k++) await this.load(k, fi - 2 * k);
     const scale = Math.min(W, H) / 1080, pitch = Math.max(3, (ev.pitch || 12) * scale), cols = Math.ceil(W / pitch), rows = Math.ceil(H / pitch), N = cols * rows;
@@ -247,7 +271,7 @@ export class DotRenderer {
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.tRaw[0]); gl.uniform1i(C.U('uR'), 1);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.tA); gl.uniform1i(C.U('uBl'), 2);
     const bgc = hex(L.bg || '#000000'), bgl = .299 * bgc[0] + .587 * bgc[1] + .114 * bgc[2];
-    const recoil = detAge < .3 ? Math.exp(-detAge / .06) : 0, shk = ((cam.isBar ? 10 : 5) * kick + 26 * recoil * I * g) * W / 1440, kbs = cam.kb * 7 + (detAge < .3 ? Math.round(detAge * fps) : 0);
+    const recoil = detAge < .3 && !this.hold ? Math.exp(-detAge / .06) : 0, shk = ((cam.isBar ? 10 : 5) * kick + 26 * recoil * I * g) * W / 1440, kbs = cam.kb * 7 + (detAge < .3 ? Math.round(detAge * fps) : 0);
     gl.uniform3fv(C.U('uBg'), bgc); gl.uniform1f(C.U('uMode'), L.mode || 0); gl.uniform1f(C.U('uFx'), fx); gl.uniform4fv(C.U('uCrop'), crop); gl.uniform2f(C.U('uRes'), W, H);
     gl.uniform2f(C.U('uShake'), shk * (hsh(kbs * 3.1) - .5) * 2 / W, shk * (hsh(kbs * 5.7) - .5) * 2 / H);
     gl.uniform1f(C.U('uCA'), ((cam.isBar ? 22 : 12) * kick + (14 * recoil + Math.min(10, spd * .25)) * g) * W / 1440); gl.uniform1f(C.U('uCon'), 1 + (L.full ? .2 : .35) * kick);
@@ -261,8 +285,8 @@ export class DotRenderer {
     const gl = this.gl, fps = this.fps, W = this.W, H = this.H, I = this.plan.intensity, SF = this.SF, st = L.st, fx = g < 0.01 ? 0 : g, quiet = g < 0.2;
     const fi = this.footageF(n); await this.load(0, fi);
     const b = this.beatAt(n), held = this.holds.some(h => n >= h.f0 && n < h.f1);
-    const kick = held ? 0 : Math.exp(-b.ka / .05) * Math.min(1.3, I) * g;
-    let fl = null; for (const x of this.flash) { if (quiet && x.burst) continue; if (n === x.f) fl = {c: x.c, s: x.s}; else if (n > x.f && n <= x.f + SF && !fl) fl = {c: x.c, s: x.s * .25}; }
+    const kick = held || this.hold ? 0 : Math.exp(-b.ka / .05) * Math.min(1.3, I) * g;
+    let fl = null; if (!this.hold) for (const x of this.flash) { if (quiet && x.burst) continue; if (n === x.f) fl = {c: x.c, s: x.s}; else if (n > x.f && n <= x.f + SF && !fl) fl = {c: x.c, s: x.s * .25}; }
     const S = this.stage, info = await S.draw(n, {n, g, kick, L, fi});
     const cam = S.cam, cut = S.isCut(n);
     let spd = 0, blur = [0, 0];
@@ -279,7 +303,7 @@ export class DotRenderer {
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.tRaw[0]); gl.uniform1i(U('uR'), 1);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, S.tSA); gl.uniform1i(U('uBl'), 2);
     const detAge = (() => { let a = 99; for (const f of this.detF) if (f <= n) a = (n - f) / fps; return a; })();
-    const recoil = detAge < .3 ? Math.exp(-detAge / .06) : 0, shk = .5 * ((b.isBar ? 10 : 5) * kick + 26 * recoil * I * g) * W / 1440, kbs = b.kb * 7 + (detAge < .3 ? Math.round(detAge * fps) : 0);
+    const recoil = detAge < .3 && !this.hold ? Math.exp(-detAge / .06) : 0, shk = .5 * ((b.isBar ? 10 : 5) * kick + 26 * recoil * I * g) * W / 1440, kbs = b.kb * 7 + (detAge < .3 ? Math.round(detAge * fps) : 0);
     gl.uniform4fv(U('uCrop'), this.crop(fi)); gl.uniform2f(U('uRes'), W, H); gl.uniform1f(U('uFx'), fx);
     gl.uniform2f(U('uShake'), shk * (hsh(kbs * 3.1) - .5) * 2 / W, shk * (hsh(kbs * 5.7) - .5) * 2 / H); gl.uniform2f(U('uBlurV'), blur[0], blur[1]);
     gl.uniform1f(U('uCA'), .5 * ((b.isBar ? 22 : 12) * kick + (14 * recoil + Math.min(10, spd * .25)) * g) * W / 1440);
