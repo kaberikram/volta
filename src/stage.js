@@ -31,7 +31,7 @@ export class Stage {
     this.r = r; this.gl = r.gl; this.ok = false; this.tried = false; this.W = 0; this.H = 0; this.need = false;
     let ren = String(this.gl.getParameter(this.gl.RENDERER) || '');
     try { const x = this.gl.getExtension('WEBGL_debug_renderer_info'); if (x) ren += ' ' + this.gl.getParameter(x.UNMASKED_RENDERER_WEBGL); } catch (e) {}
-    this.soft = /swiftshader|llvmpipe|software/i.test(ren);
+    this.soft = /swiftshader|llvmpipe|softpipe|software|basic render|warp/i.test(ren);
     this.tier = this.soft ? {samples: 0, segs: 12, mirrorDancer: 0, nSh: 6} : {samples: 4, segs: 24, mirrorDancer: 1, nSh: 16};
   }
   get q() { return {...this.tier, ...(this.r.stageQ || {})}; }
@@ -115,7 +115,7 @@ export class Stage {
     if (this.float) { const s = Math.min(this.q.samples, maxS(gl.RGBA16F), maxS(gl.DEPTH_COMPONENT24)); if (s > 0) opts.push([true, s]); opts.push([true, 0]); }
     { const s = Math.min(this.q.samples, maxS(gl.RGBA8), maxS(gl.DEPTH_COMPONENT24)); if (s > 0) opts.push([false, s]); opts.push([false, 0]); }
     for (const [f, s] of opts) if (tryAlloc(f, s)) return;
-    this.free(); this.ok = false; console.warn('[dotfx] plates stage disabled: no usable render target');
+    this.free(); this.ok = false; this.err = 'no usable render target'; console.warn('[dotfx] plates stage disabled: no usable render target');
   }
   /** per plan: pack every ghost's slabs once, precompute the dancer track. */
   build(V, plan, fps) {
@@ -147,17 +147,21 @@ export class Stage {
   camAt(n) {
     const r = this.r, fps = this.fps, t = n / fps, plan = this.plan, si = this.shotIdx(n), S = this.shots[si] || {kind: 'orbit', az: 0, r: 1, h: 1, sgn: 1, t: 0, t1: 1, f: 0};
     const u = clamp((t - S.t) / Math.max(.05, S.t1 - S.t)), g = effectAt(plan.fx, t), I = plan.intensity;
-    const dp = this.dposT[clamp(n, 0, this.dposT.length - 1)], T = [dp[0], .95, dp[2]], port = r.W < r.H ? 1.12 : 1;
+    const dp = this.dposT[clamp(n, 0, this.dposT.length - 1)], T = [dp[0], .95, dp[2]];
+    // narrow (9:16) frames: pull back, widen the lens, raise orbits and keep tracked framing near the centre
+    const asp = r.W / r.H, narrow = asp < 1, port = narrow ? Math.min(1.4, 1 / Math.sqrt(asp)) : 1, lat = Math.min(1, asp * 9 / 16);
+    const portO = narrow ? Math.min(1.7, Math.pow(1 / asp, .8)) : 1;             // orbits pull back further so the ring fits a tall frame
     let eye, tgt = T, fov, roll = 0, up = [0, 1, 0];
     const ring = (R, y, a) => [T[0] + R * Math.sin(a), y, T[2] + R * Math.cos(a)];
     if (S.kind === 'low') { eye = ring(3.0 * S.r * port, .32, S.az + S.sgn * 75 * DEG * u); tgt = [T[0], .85, T[2]]; fov = 52; roll = S.sgn * 3; }
     else if (S.kind === 'top') { const ph = S.az + S.sgn * 50 * DEG * u; eye = [T[0] + .25, port > 1 ? 10 : 8.5, T[2]]; tgt = [T[0], 0, T[2]]; up = [Math.cos(ph), 0, Math.sin(ph)]; fov = 54 - 6 * u; }
     else if (S.kind === 'push') { eye = ring((4.2 - 1.8 * easeOut(u)) * port, .18, S.az); tgt = [T[0], 1.25, T[2]]; fov = 46 - 10 * u; }
-    else if (S.kind === 'track') { const nv = [Math.sin(S.az), 0, Math.cos(S.az)], tv = [Math.cos(S.az), 0, -Math.sin(S.az)], s = -1.6 + 3.2 * u;
-      eye = [T[0] + nv[0] * 3.1 * port + tv[0] * s * S.sgn, .9, T[2] + nv[2] * 3.1 * port + tv[2] * s * S.sgn]; tgt = [T[0] + tv[0] * .48 * S.sgn, .95, T[2] + tv[2] * .48 * S.sgn]; fov = 38; }
+    else if (S.kind === 'track') { const nv = [Math.sin(S.az), 0, Math.cos(S.az)], tv = [Math.cos(S.az), 0, -Math.sin(S.az)], s = (-1.6 + 3.2 * u) * lat;
+      eye = [T[0] + nv[0] * 3.1 * port + tv[0] * s * S.sgn, .9, T[2] + nv[2] * 3.1 * port + tv[2] * s * S.sgn]; tgt = [T[0] + tv[0] * .48 * lat * S.sgn, .95, T[2] + tv[2] * .48 * lat * S.sgn]; fov = 38; }
     else if (S.kind === 'rake') { const sb = plan.stageBars[S.bar] || {emAz: 0}, E = [8.5 * Math.sin(sb.emAz), .6, 8.5 * Math.cos(sb.emAz)], toC = nrm([-E[0], 0, -E[2]]), d = 1.2 + 1.5 * u;
       eye = [E[0] + toC[0] * d, .9, E[2] + toC[2] * d]; tgt = [T[0], 1.0, T[2]]; fov = 34; }
-    else { const hi = S.high; eye = ring((hi ? 4.2 : 4.6) * S.r * port, hi ? 3.6 : 1.35 * S.h, S.az + S.sgn * 36 * DEG * u + 4 * DEG * Math.sin(2 * Math.PI * t / 3.1)); fov = hi ? 46 : 40; }
+    else { const hi = S.high; eye = ring((hi ? 4.2 : 4.6) * S.r * portO, hi ? 3.6 : 1.35 * S.h * (narrow ? 1.8 : 1), S.az + S.sgn * 36 * DEG * u + 4 * DEG * Math.sin(2 * Math.PI * t / 3.1)); fov = hi ? 46 : 40;
+      if (narrow) tgt = [T[0], hi ? .45 : .7, T[2]]; }
     // swings rotate the eye about the target; beat kicks dolly in and narrow the lens
     let yaw = 0; for (const sw of r.swings) { const a = (n - sw.f) / fps; if (a >= 0) yaw += sw.deg * g * DEG * .5 * Math.exp(-a / sw.tau) * Math.cos(2 * Math.PI * a / sw.per); }
     if (yaw && S.kind !== 'top') { const d = rotY(sub(eye, tgt), yaw); eye = add(tgt, d); }
@@ -174,6 +178,7 @@ export class Stage {
     if (Math.abs(dot(fw, nrm(up))) > .98) up = [0, 0, -1];
     roll += (b.kb % 2 ? 1 : -1) * 1.5 * k;
     up = rotAxis(nrm(sub(up, scl(fw, dot(up, fw)))), fw, roll * DEG);
+    if (narrow) fov = Math.min(fov * (1 + .45 * (1 - asp)), 62);
     return {eye, fw, up, fov: fov * DEG * (1 - .07 * k), T, si, kind: S.kind};
   }
   newestSpawn(t) { let nw = null; for (const g of this.plan.ghosts) if (!g.seeded && g.t <= t && t - g.t < .6 && !g.hidden) nw = g.t; return nw; }
@@ -205,8 +210,9 @@ export class Stage {
     let newest = null; for (const x of live) if (!x.g.seeded && (!newest || x.g.t > newest.g.t)) newest = x;
     for (const x of live) {
       const face = x.slotA + x.g.yawOff;
-      if (x.u < 1) { const sn = Math.max(0, Math.floor(x.g.t * fps + 1e-6)); x.yaw = angLerp(this.dancerPose(sn, this.camAt(sn)).yaw, face, x.u) + x.spinA; }
-      else x.yaw = face + x.spinA;
+      // a fresh ghost starts in the dancer's billboard pose at its spawn frame (yaw and high-camera tilt), then settles upright
+      if (x.u < 1) { const sn = Math.max(0, Math.floor(x.g.t * fps + 1e-6)), d0 = this.dancerPose(sn, this.camAt(sn)); x.yaw = angLerp(d0.yaw, face, x.u) + x.spinA; x.tilt = d0.tilt * (1 - x.u); }
+      else { x.yaw = face + x.spinA; x.tilt = 0; }
     }
     const dpose = this.dancerPose(n, cam), dpos = dpose.pos;
     // spots: two follow the dancer, one the newest ghost, two sweep the ring
@@ -256,7 +262,7 @@ export class Stage {
     for (let i = 0; i < HOOP_SEG; i++) { const a0 = i / HOOP_SEG * Math.PI * 2, a1 = (i + 1) / HOOP_SEG * Math.PI * 2;
       beam([dpos[0] + hr * Math.sin(a0), hy, dpos[2] + hr * Math.cos(a0)], .012, [dpos[0] + hr * Math.sin(a1), hy, dpos[2] + hr * Math.cos(a1)], .012, C.hoop, hI, 3); }
     for (let i = 0; i < 5; i++) { const Pp = spots.P.slice(i * 3, i * 3 + 3), Dd = spots.D.slice(i * 3, i * 3 + 3), len = Pp[1] / Math.max(.2, -Dd[1]), half = Math.acos(spots.cos[i]);
-      beam(Pp, .05, add(Pp, scl(Dd, len)), Math.tan(half) * len, spots.C.slice(i * 3, i * 3 + 3), .4, 2); }
+      beam(Pp, .05, add(Pp, scl(Dd, len)), Math.tan(half) * len, spots.C.slice(i * 3, i * 3 + 3), .6, 2); }
     gl.bindBuffer(gl.ARRAY_BUFFER, this.bBeam); gl.bufferSubData(gl.ARRAY_BUFFER, 0, B.subarray(0, nb * 16)); gl.bindBuffer(gl.ARRAY_BUFFER, null);
     this.nBeams = nb;
     // ---- passes
@@ -306,7 +312,10 @@ export class Stage {
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.fSB); gl.bindTexture(gl.TEXTURE_2D, this.tSA); gl.uniform2f(PL.U('uDir'), 2 / this.BW, 0); gl.drawArrays(gl.TRIANGLES, 0, 3);
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.fSA); gl.bindTexture(gl.TEXTURE_2D, this.tSB); gl.uniform2f(PL.U('uDir'), 0, 2 / this.BH); gl.drawArrays(gl.TRIANGLES, 0, 3); }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    return {live: live.length, shot: cam.kind, theta: +O.ang.toFixed(4), newestE: newest ? +newest.E.toFixed(3) : 0, calm: +O.calm.toFixed(3)};
+    const ndc = p => { const x = VP[0] * p[0] + VP[4] * p[1] + VP[8] * p[2] + VP[12], y = VP[1] * p[0] + VP[5] * p[1] + VP[9] * p[2] + VP[13], w = VP[3] * p[0] + VP[7] * p[1] + VP[11] * p[2] + VP[15]; return [x / w, y / w, w]; };
+    const dn = ndc([dpos[0], .95, dpos[2]]), ring = live.filter(x => x.u >= 1), inF = ring.filter(x => { const q = ndc([x.pos[0], .9, x.pos[2]]); return q[2] > 0 && Math.abs(q[0]) < 1 && Math.abs(q[1]) < 1; }).length;
+    return {live: live.length, shot: cam.kind, theta: +O.ang.toFixed(4), newestE: newest ? +newest.E.toFixed(3) : 0, calm: +O.calm.toFixed(3),
+      dancerNdcX: +dn[0].toFixed(3), ringInFrame: ring.length ? +(inF / ring.length).toFixed(3) : null};
   }
   drawGhosts(live, VP, mirror, additive, ctx, st, emis, newest) {
     const gl = this.gl, P = this.PG, U = P.U, tn = ctx.n / this.fps;
@@ -323,7 +332,7 @@ export class Stage {
       const seg = this.gseg[x.g.i], S = STYLES[x.g.style] || STYLES.bar;
       if (additive && x.depthOff) gl.disable(gl.DEPTH_TEST); else gl.enable(gl.DEPTH_TEST);
       gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 32, seg.off * 32); gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 32, seg.off * 32 + 16);
-      gl.uniform3fv(U('uGPos'), x.pos); gl.uniform1f(U('uGYaw'), x.yaw); gl.uniform1f(U('uAge'), x.g.seeded ? 9 : x.age); gl.uniform1f(U('uColl'), x.coll);
+      gl.uniform3fv(U('uGPos'), x.pos); gl.uniform1f(U('uGYaw'), x.yaw); gl.uniform1f(U('uGTilt'), x.tilt || 0); gl.uniform1f(U('uAge'), x.g.seeded ? 9 : x.age); gl.uniform1f(U('uColl'), x.coll);
       gl.uniform1f(U('uSxz'), sxz); gl.uniform1f(U('uN'), S.n); gl.uniform1f(U('uRh'), S.rh); gl.uniform1f(U('uStyle'), S.id); gl.uniform1f(U('uSeed'), hsh(x.g.i * 3.17 + this.plan.seed));
       gl.uniform1f(U('uTwist'), .12 * x.calm);
       gl.uniform3fv(U('uAlb'), hex(m.alb)); gl.uniform3fv(U('uSpec'), hex(m.spec)); gl.uniform3fv(U('uRimC'), hex(m.rim)); gl.uniform1f(U('uGloss'), m.gloss); gl.uniform1f(U('uRimK'), m.rk); gl.uniform1f(U('uMetal'), m.metal);

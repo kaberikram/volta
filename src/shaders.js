@@ -133,9 +133,10 @@ void main(){
 
 export const SLAB_VS = stageSrc(`
 layout(location=0) in vec2 aV; layout(location=1) in vec4 aA; layout(location=2) in vec4 aB;
-uniform mat4 uVP; uniform vec3 uGPos; uniform float uGYaw, uAge, uColl, uSxz, uN, uRh, uSeed, uMirror, uTwist, uT, uStyle;
+uniform mat4 uVP; uniform vec3 uGPos; uniform float uGYaw, uGTilt, uAge, uColl, uSxz, uN, uRh, uSeed, uMirror, uTwist, uT, uStyle;
 out vec3 vW, vN; out float vJ;
 float spow(float x,float e){ return sign(x)*pow(abs(x),e); }
+vec3 tiltX(vec3 v,float a){ float c=cos(a), s=sin(a); return vec3(v.x, v.y*c-v.z*s, v.y*s+v.z*c); }
 void main(){
   float th=aV.x, ring=aV.y, a=aB.x, b=aB.y, t=aB.z, rnd=fract(aB.w+uSeed), jN=aA.w;
   float jy=(rnd-.5)*(uStyle>1.5?.21:uStyle<.5?.07:.1);
@@ -155,9 +156,9 @@ void main(){
   p.xz*=sxz;
   float yw=jy+uTwist*sin(.9*uT+jN*9.+uSeed*6.283);
   p=rotYv(p,yw); n=rotYv(n,yw);
-  vec3 c0=aA.xyz+vec3(jo.x,0.,jo.y), Wc=uGPos+rotYv(c0,uGYaw), W=uGPos+rotYv(c0+p,uGYaw);
+  vec3 c0=aA.xyz+vec3(jo.x,0.,jo.y), Wc=uGPos+rotYv(tiltX(c0,-uGTilt),uGYaw), W=uGPos+rotYv(tiltX(c0+p,-uGTilt),uGYaw);
   W=Wc+(W-Wc)*smoothstep(.6,1.6,length(Wc-uEye));
-  vW=W; vN=rotYv(n,uGYaw); vJ=jN;
+  vW=W; vN=rotYv(tiltX(n,-uGTilt),uGYaw); vJ=jN;
   if(uMirror>.5) W.y=-W.y;
   gl_Position=uVP*vec4(W,1.); }`);
 export const SLAB_FS = stageSrc(SPOTS + `
