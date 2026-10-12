@@ -38,6 +38,7 @@
     <p id="clipName">No clip</p>
     <p id="outTxt">1080p · 60 fps</p>
     <div class="bar-actions">
+      <p id="recTxt" hidden></p>
       <a id="dl" class="dl" style="display:none">Download</a>
       <button type="button" id="bExport">Export</button>
     </div>
@@ -45,11 +46,23 @@
 
   <section class="clip" aria-label="Clip">
     <h2>Clip</h2>
-    <label class="well video-well">
+    <div class="seg" role="group" aria-label="Source">
+      <button type="button" id="srcVideo" aria-pressed="true">Video</button>
+      <button type="button" id="srcCam" aria-pressed="false">Webcam</button>
+    </div>
+    <label class="well video-well vid-only">
       <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M1.5 5.2h2.4L5.4 3.2h5.2l1.5 2H14.5v7.6H1.5V5.2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="8" cy="8.6" r="2.1" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
       <span class="k">Video</span>
       <span class="file-name">Choose a clip</span>
       <input type="file" id="fVideo" accept="video/*,.mov,.mp4">
+    </label>
+    <div class="well cam-well cam-only" id="camWell">
+      <video id="camView" muted playsinline aria-label="Camera preview"></video>
+      <span id="camOff">Camera off</span>
+    </div>
+    <label class="field cam-only">
+      <span class="k">Camera</span>
+      <select id="camSel"><option value="">Default camera</option></select>
     </label>
     <label class="well song-well">
       <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M6.2 12.6a1.7 1.7 0 1 1-1.2-1.6V3.8l7-1.4v6.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="10.8" cy="10.2" r="1.7" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
@@ -59,11 +72,11 @@
       </span>
       <input type="file" id="fAudio" accept="audio/*,.mp3,.wav,.m4a">
     </label>
-    <label class="switch">
+    <label class="switch vid-only">
       <input type="checkbox" id="keepAudio">
       <span>Use the video's audio</span>
     </label>
-    <label class="field">
+    <label class="field vid-only">
       <span class="k">Analysis</span>
       <select id="quality">
         <option value="fast">fast (depth every 2nd frame)</option>
@@ -76,6 +89,7 @@
   <section class="viewer" id="stage">
     <canvas id="view"></canvas>
     <p class="empty">Drop a clip and a song. <span>Volta locks the edit to the beat.</span></p>
+    <p id="countTxt" hidden></p>
     <div id="prog" hidden><div id="bar"></div><span id="progTxt">idle</span></div>
   </section>
 
@@ -176,12 +190,12 @@
       <input type="range" id="scrub" min="0" max="1" step="0.001" value="0" aria-label="Playback">
     </div>
     <div class="tl-foot">
-      <span id="startTxt">0.00s</span>
-      <label class="switch">
+      <span id="startTxt" class="vid-only">0.00s</span>
+      <label class="switch vid-only">
         <input type="checkbox" id="snapBar" checked>
         <span>Snap to bars</span>
       </label>
-      <button type="button" id="bAuto">Auto-pick</button>
+      <button type="button" id="bAuto" class="vid-only">Auto-pick</button>
       <span id="fxHint">Double-click the beat lane to fade back to the clip.</span>
       <button type="button" id="bFxReset">Reset fade</button>
       <p id="audioInfo" class="info"></p>

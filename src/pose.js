@@ -14,30 +14,32 @@ export const distOf = d => D0 * (2.4 - 1.8 * d);
 const memo = new WeakMap();
 const box = V => { let c = memo.get(V); if (!c) { c = {slabs: new Map()}; memo.set(V, c); } return c; };
 
-/** per dm frame: bbox, lowest row, median person depth, coverage descriptor, descriptor change. */
+/** stats of one dm frame (RGBA: R depth, G mask): bbox, lowest row, median person depth, coverage descriptor. */
+const hist = new Uint32Array(256);
+export function poseStatsFrame(d, aw, ah, prevDesc = null) {
+  let x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1, n = 0; const rowN = new Uint16Array(ah); hist.fill(0);
+  for (let y = 0; y < ah; y++) for (let x = 0; x < aw; x++) { const p = (y * aw + x) * 4; if (d[p + 1] > 127) { n++; rowN[y]++; hist[d[p]]++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; } }
+  if (n < 12) return {ok: false, desc: prevDesc || new Float32Array(DW * DH + 1), dd: 0};
+  let rb = y1; while (rb > y0 && rowN[rb] < 3) rb--;
+  let med = 0; for (let v = 0, c = 0, half = n >> 1; v < 256; v++) { c += hist[v]; if (c > half) { med = v; break; } }   // == sorted[n >> 1]
+  const desc = new Float32Array(DW * DH + 1), bw = x1 - x0 + 1, bh = rb - y0 + 1;
+  for (let y = y0; y <= rb; y++) for (let x = x0; x <= x1; x++) if (d[(y * aw + x) * 4 + 1] > 127) {
+    const gx = Math.min(DW - 1, Math.floor((x - x0) / bw * DW)), gy = Math.min(DH - 1, Math.floor((y - y0) / bh * DH));
+    desc[gy * DW + gx] += DW * DH / (bw * bh); }
+  desc[DW * DH] = clamp(bw / bh / 2);
+  return {ok: true, x0, x1, y0, y1, rb, n, cut: rb >= ah - 2, pd: med / 255, desc, dd: 0};
+}
+/** per dm frame stats + descriptor change to the previous frame. */
 export function poseStats(V) {
   const c = box(V); if (c.stats) return c.stats;
   const {aw, ah} = V, N = V.dm.length, out = [];
-  let prev = null;
-  for (let k = 0; k < N; k++) {
-    const d = V.dm[k];
-    let x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1, n = 0; const rowN = new Uint16Array(ah), dl = [];
-    for (let y = 0; y < ah; y++) for (let x = 0; x < aw; x++) { const p = (y * aw + x) * 4; if (d[p + 1] > 127) { n++; rowN[y]++; dl.push(d[p]); if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; } }
-    if (n < 12) { out.push({ok: false, desc: prev ? prev.desc : new Float32Array(DW * DH + 1), dd: 0}); continue; }
-    let rb = y1; while (rb > y0 && rowN[rb] < 3) rb--;
-    dl.sort((a, b) => a - b);
-    const desc = new Float32Array(DW * DH + 1), bw = x1 - x0 + 1, bh = rb - y0 + 1;
-    for (let y = y0; y <= rb; y++) for (let x = x0; x <= x1; x++) if (d[(y * aw + x) * 4 + 1] > 127) {
-      const gx = Math.min(DW - 1, Math.floor((x - x0) / bw * DW)), gy = Math.min(DH - 1, Math.floor((y - y0) / bh * DH));
-      desc[gy * DW + gx] += DW * DH / (bw * bh); }
-    desc[DW * DH] = clamp(bw / bh / 2);
-    out.push({ok: true, x0, x1, y0, y1, rb, n, cut: rb >= ah - 2, pd: dl[dl.length >> 1] / 255, desc, dd: 0});
-    prev = out[k];
-  }
+  for (let k = 0; k < N; k++) out.push(poseStatsFrame(V.dm[k], aw, ah, k ? out[k - 1].desc : null));
   for (let k = 1; k < N; k++) out[k].dd = descDist(out[k].desc, out[k - 1].desc);
   if (N > 1) out[0].dd = out[1].dd;
   return (c.stats = out);
 }
+/** live bundles: seed the cache with arrays the live analyzer grows in place, so every consumer works unchanged. */
+export function bindLive(V, {stats, fit}) { const c = box(V); c.stats = stats; c.fit = fit; c.slabs = new Map(); return c; }
 export function descDist(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return s / a.length; }
 
 // source-camera lift (full frame, source aspect), same formula as the point shader

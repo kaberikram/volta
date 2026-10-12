@@ -239,3 +239,15 @@ test('feet cut by the bottom of the frame keep the plates (no dots fallback), gh
   for (const x of ghostsAt(p, 8)) assert.ok(x.pos[1] >= 0);
   assert.ok(stageFit(cut).yb.every(y => y === 0), 'cut-off bodies stand on the floor');
 });
+
+test('live (webcam) plan: song-driven runs and shots, no ghosts yet, orbit extrapolates past the live edge', () => {
+  const p = makePlan(grid, V.dur, {live: true, fps: 30, step: 1, n: 0}, {seed: 1, scene: 'mix', live: true}), o = p.orbit;
+  assert.equal(p.scene, 'mix'); assert.ok(p.runs.length > 0 && p.shots.length > 0, 'plates runs and shots from the music');
+  assert.deepEqual(p.ghosts, []); assert.ok(o.live && o.n === 0 && o.hz === 30);
+  const share = p.runs.reduce((a, r) => a + r.t1 - r.t0, 0) / V.dur; assert.ok(share >= .35 && share <= .75, `plates ${share}`);
+  for (let i = 0; i < 90; i++) { o.calm[i] = i < 45 ? 0 : 1; o.acc[i + 1] = o.acc[i] + o.calm[i] ** 2 / 30; } o.n = 90;
+  const a = orbitAt(p, 89 / 30), b = orbitAt(p, 4);
+  assert.ok(Math.abs(orbitAt(p, (89 - 1e-6) / 30).ang - a.ang) < 1e-6, 'no snap at the live edge');
+  assert.ok((b.ang - a.ang) * o.dir > 0 && b.calm === 1, 'keeps turning at the last calm');
+  assert.deepEqual(makePlan(grid, V.dur, V, {seed: 1, scene: 'dots', live: true}).scene, 'dots');
+});
