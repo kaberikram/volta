@@ -30,11 +30,20 @@ export function outSize(V, aspect, maxH) {
 async function getBundle(synth = {}) {
   const key = JSON.stringify(synth);
   if (!bundles.has(key)) {
-    const t0 = performance.now();
-    bundles.set(key, synthBundle({...synth, frames: 'browser', onProgress: p => status(`synthesising frames ${(p * 100).toFixed(0)}%`)}).then(V => {
+    const t0 = performance.now(), {cutFeet, ...opts} = synth;
+    if (cutFeet) bundles.set(key, getBundle(opts).then(cutFeetBundle));
+    else bundles.set(key, synthBundle({...opts, frames: 'browser', onProgress: p => status(`synthesising frames ${(p * 100).toFixed(0)}%`)}).then(V => {
       console.log(`[H] bundle ${V.w}x${V.h} n=${V.n} dm=${V.dm.length} built in ${((performance.now() - t0) / 1000).toFixed(1)}s`); return V; }));
   }
   return bundles.get(key);
+}
+/** the same clip framed so the feet run off the bottom: every mask column is extended from its lowest pixel to the frame edge */
+function cutFeetBundle(V) {
+  const dm = V.dm.map(d => { const c = new Uint8Array(d);
+    for (let x = 0; x < V.aw; x++) { let y1 = -1; for (let y = V.ah - 1; y >= 0; y--) if (c[(y * V.aw + x) * 4 + 1] > 127) { y1 = y; break; }
+      if (y1 >= V.ah * .8) for (let y = y1; y < V.ah; y++) { const p = (y * V.aw + x) * 4; c[p + 1] = 255; c[p] = Math.max(c[p], c[(y1 * V.aw + x) * 4]); } }
+    return c; });
+  return {...V, dm};
 }
 
 function glState() {

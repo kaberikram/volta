@@ -124,6 +124,7 @@ export class Stage {
     if (!this.need) { this.release(); return; }
     if (!this.ensure()) return;
     const gl = this.gl, fit = this.fit = stageFit(V), segs = new Map(), parts = []; let off = 0;
+    this.cut = poseStats(V).map(s => !!(s.ok && s.cut));
     this.gseg = plan.ghosts.map(g => {
       const key = g.di + '|' + g.style;
       if (!segs.has(key)) { const sb = slabBase(V, g.di, g.style); segs.set(key, {off, cnt: sb.count}); parts.push(sb.inst); off += sb.count; }
@@ -332,7 +333,7 @@ export class Stage {
       const seg = this.gseg[x.g.i], S = STYLES[x.g.style] || STYLES.bar;
       if (additive && x.depthOff) gl.disable(gl.DEPTH_TEST); else gl.enable(gl.DEPTH_TEST);
       gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 32, seg.off * 32); gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 32, seg.off * 32 + 16);
-      gl.uniform3fv(U('uGPos'), x.pos); gl.uniform1f(U('uGYaw'), x.yaw); gl.uniform1f(U('uGTilt'), x.tilt || 0); gl.uniform1f(U('uAge'), x.g.seeded ? 9 : x.age); gl.uniform1f(U('uColl'), x.coll);
+      gl.uniform3fv(U('uGPos'), x.pos); gl.uniform1f(U('uGYaw'), x.yaw); gl.uniform1f(U('uGTilt'), x.tilt || 0); gl.uniform1f(U('uCut'), this.cut[x.g.di] ? 1 : 0); gl.uniform1f(U('uAge'), x.g.seeded ? 9 : x.age); gl.uniform1f(U('uColl'), x.coll);
       gl.uniform1f(U('uSxz'), sxz); gl.uniform1f(U('uN'), S.n); gl.uniform1f(U('uRh'), S.rh); gl.uniform1f(U('uStyle'), S.id); gl.uniform1f(U('uSeed'), hsh(x.g.i * 3.17 + this.plan.seed));
       gl.uniform1f(U('uTwist'), .12 * x.calm);
       gl.uniform3fv(U('uAlb'), hex(m.alb)); gl.uniform3fv(U('uSpec'), hex(m.spec)); gl.uniform3fv(U('uRimC'), hex(m.rim)); gl.uniform1f(U('uGloss'), m.gloss); gl.uniform1f(U('uRimK'), m.rk); gl.uniform1f(U('uMetal'), m.metal);

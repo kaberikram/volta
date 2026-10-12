@@ -137,6 +137,17 @@ async function stageChecks(page, shoot, glExpect = GL_CLEAN) {
     fs.mkdirSync(OUT, {recursive: true});
     if (items9.length) writePng(path.join(OUT, `stage_${SCENE}_916_contact.png`), await page.evaluate(([it, title]) => window.H.sheet(it, {cols: 8, w: 200, title}), [items9, `stage ${SCENE} 9:16 ${info9.W}x${info9.H}`]));
     await reinit({}); }
+  // feet cut by the frame bottom: the plates stay on (mix included) and stage frames still render cleanly
+  { const ic = await reinit({synth: {cutFeet: true}}), im = await reinit({synth: {cutFeet: true}, opts: {scene: 'mix'}});
+    check(ic.stage.ok && ic.runs.length > 0 && im.scene === 'mix' && im.runs.length > 0, 'feet cut by the frame: plates stay on', `${SCENE} runs ${ic.runs.length}, mix runs ${im.runs.length} ${im.describe.split('\n')[1]}`);
+    await reinit({synth: {cutFeet: true}}); const itc = [], bad = [];
+    for (const p of picks.filter((_, i) => i % 2 === 0).slice(0, 6)) { const s = await shoot(p.t);
+      if (!(s.stats.stage === true && s.gl.error === 0 && s.luma > .01 && s.luma < .45)) bad.push(`${p.t.toFixed(2)}: stage ${s.stats.stage} err ${s.gl.error} luma ${s.luma}`);
+      itc.push({url: await page.evaluate(tt => window.H.png(tt), p.t), label: `${p.t.toFixed(2)}s ${s.stats.shot}`}); }
+    check(!bad.length, 'feet cut by the frame: stage frames render', bad.join(' | '));
+    fs.mkdirSync(OUT, {recursive: true});
+    writePng(path.join(OUT, `stage_${SCENE}_cutfeet_contact.png`), await page.evaluate(([it, title]) => window.H.sheet(it, {cols: 3, w: 360, title}), [itc, `stage ${SCENE}, feet cut by the frame`]));
+    await reinit({}); }
   // key frames + contact sheet
   fs.mkdirSync(OUT, {recursive: true}); const items = [];
   for (const [i, p] of picks.entries()) { const url = await page.evaluate(tt => window.H.png(tt), p.t); writePng(path.join(OUT, `stage_${SCENE}_${String(i).padStart(2, '0')}_${p.t.toFixed(2)}s_${p.label}.png`), url);

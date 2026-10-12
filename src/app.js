@@ -386,7 +386,8 @@ let lastSceneNote = '';
 function showScene() {
   const off = S.plan && S.plan.runs && S.plan.runs.length && R.stage.need && !R.stage.ok;
   const note = (S.plan && S.plan.sceneNote) || (off ? 'plates need WebGL features this browser lacks, showing dots' : '');
-  $('sceneHint').textContent = note || sceneNotes[$('scene').value] || '';
+  const share = S.plan && S.plan.scene === 'mix' && S.plan.runs.length ? ` · plates ${Math.round(100 * S.plan.runs.reduce((a, r) => a + r.t1 - r.t0, 0) / S.plan.dur)}% of the edit` : '';
+  $('sceneHint').textContent = note || (sceneNotes[$('scene').value] || '') + share;
   if (note && note !== lastSceneNote) log('scene: ' + note);
   lastSceneNote = note || '';
 }

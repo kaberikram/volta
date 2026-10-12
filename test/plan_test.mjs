@@ -97,11 +97,14 @@ test('mix: plates runs alternate with dots and leave the dots edit untouched out
   for (const seed of SEEDS) for (const palette of PALETTES) {
     const m = mk('mix', {seed, palette}), d = mk('dots', {seed, palette}), N = m.roles.length;
     assert.equal(m.scene, 'mix'); assert.ok(m.runs.length >= 1, `${seed}/${palette}: at least one plates run`);
-    assert.equal(m.stages[0], 'D', 'opening bar stays dots'); assert.equal(m.stages[N - 1], 'D', 'end bar stays dots');
-    m.roles.forEach((r, i) => { if (r === 'freeze' || r === 'echo') assert.equal(m.stages[i], 'D', `${r} bar stays dots`); });
+    assert.equal(m.stages[0], 'D', 'opening bar stays dots');
+    if (m.stages[N - 1] === 'P') { assert.equal(m.reform, null, 'a plates ending replaces the dots re-form');
+      const tEnd = m.barStarts[N - 1], alive = m.ghosts.filter(g => g.t < tEnd && g.fade > tEnd);
+      assert.ok(alive.every(g => g.fade + GHOST.collapse <= m.dur + 1e-6), 'the ring collapses before the clip ends'); }
+    m.roles.forEach((r, i) => { if (r === 'freeze') assert.equal(m.stages[i], 'D', 'freeze bar stays dots'); });
     for (let k = 0; k < m.runs.length; k++) { const r = m.runs[k]; assert.ok(r.b1 - r.b0 >= 1 && r.b1 - r.b0 <= 4, 'run length 1..4 bars');
       if (k) assert.ok(r.b0 > m.runs[k - 1].b1, 'a dots bar between runs'); }
-    const share = m.stages.filter(s => s === 'P').length / N; if (N >= 7) assert.ok(share >= .2 && share <= .5, `plates share ${share}`);
+    const share = m.stages.filter(s => s === 'P').length / N; assert.ok(share >= .35 && share <= .7, `plates share ${share}`);
     const out = s => s.filter(e => runOf(m, e.t) < 0).map(e => JSON.stringify(e));
     assert.deepEqual(out(m.sched), out(d.sched), 'look schedule outside runs equals the dots edit');
     assert.deepEqual(legacyPlan(canon(m)).roles, legacyPlan(canon(d)).roles);
@@ -212,4 +215,27 @@ test('long clips keep printing ghosts to the end, live ghosts stay capped', asyn
     assert.ok(late.length >= 3, `${scene}: ${late.length} visible ghosts in the last 16 s of a ${long.dur}s clip`);
     for (let t = 0; t < long.dur; t += .5) assert.ok(ghostsAt(p, t).filter(x => x.coll === 0).length <= GHOST.cap);
   }
+});
+
+test("'dots + plates' shows plates for about half of every clip length, alternating with dots", async () => {
+  const { synthSection } = await import('./synth.js');
+  for (const len of [5, 7, 9, 11, 13, 16]) {
+    const n = Math.floor(len * V.fps), k = Math.ceil(n / V.step);
+    const Vc = {...V, n, dur: n / V.fps, dm: V.dm.slice(0, k), area: V.area.slice(0, k), piv: V.piv.slice(0, k), motion: V.motion.slice(0, n)}, g2 = synthSection(Vc.dur).grid;
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const p = makePlan(g2, Vc.dur, Vc, {seed, scene: 'mix'}), share = p.runs.reduce((a, r) => a + r.t1 - r.t0, 0) / Vc.dur;
+      assert.ok(share >= .4 && share <= .7, `${len}s seed ${seed}: plates ${(share * 100).toFixed(0)}% (${p.stages.join('')})`);
+      assert.equal(p.stages[0], 'D', 'opens on dots');
+      for (let i = 1; i < p.runs.length; i++) assert.ok(p.runs[i].b0 > p.runs[i - 1].b1, 'a dots bar between plates runs');
+    }
+  }
+});
+
+test('feet cut by the bottom of the frame keep the plates (no dots fallback), ghosts stand on the floor', () => {
+  const cut = {...V, dm: V.dm.map(d => { const c = new Uint8Array(d); for (let y = V.ah - 3; y < V.ah; y++) for (let x = 120; x < 150; x++) c[(y * V.aw + x) * 4 + 1] = 255; return c; })};
+  const p = makePlan(grid, V.dur, cut, {seed: 1, scene: 'mix'}), share = p.runs.reduce((a, r) => a + r.t1 - r.t0, 0) / V.dur;
+  assert.equal(p.scene, 'mix'); assert.equal(p.sceneNote, ''); assert.ok(share >= .35, `plates ${share}`);
+  assert.ok(stageFit(cut).cutFrac > .6); assert.ok(p.ghosts.length > 0);
+  for (const x of ghostsAt(p, 8)) assert.ok(x.pos[1] >= 0);
+  assert.ok(stageFit(cut).yb.every(y => y === 0), 'cut-off bodies stand on the floor');
 });

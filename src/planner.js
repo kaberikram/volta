@@ -93,7 +93,6 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
   if (nVis < Math.max(3, .3 * nOk)) return DOTS(plan, 'dots', 'the dancer is too small in frame for plates, so dots only');
   if (nb < 4 || !NBar) return DOTS(plan, 'dots', 'not enough beats for plates');
   const fit = stageFit(video);
-  if (scene === 'mix' && fit.cutFrac > .6) return DOTS(plan, 'dots', 'feet are out of frame in most shots, so dots only');
   const RS = rng(seed * 7919 + 101), RC = rng(seed * 7919 + 202), sp = stagePal(palette), env = motionEnv(video);
   const fps = video.fps, nf = video.n;
   const barT = i => i < NBar ? bt(barStarts[i]) : dur;
@@ -105,11 +104,12 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
   if (scene === 'plates') stages.fill('P');
   else {
     const visBar = i => { let a = 0, c = 0; for (let f = Math.floor(barT(i) * fps); f < Math.min(nf, Math.ceil(barEnd(i) * fps)); f += video.step) { a += vis[Math.min(vis.length - 1, Math.floor(f / video.step))]; c++; } return c && a / c >= .5; };
-    const E = new Set(); for (let i = 1; i <= NBar - 2; i++) if (!['freeze', 'echo'].includes(role[i]) && visBar(i)) E.add(i);
-    if (!E.size && NBar >= 3) { const f = role.indexOf('freeze'); if (f > 0 && f < NBar - 1) E.add(f); }
-    if (NBar <= 2 || !E.size) note = 'the clip is too short for a plates section';
+    // bar 0 (the opening drop) stays dots; the freeze bar is the dots signature unless there is nothing else to use
+    const E = new Set(); for (let i = 1; i < NBar; i++) if (role[i] !== 'freeze' && visBar(i)) E.add(i);
+    if (E.size < 2) { const f = role.indexOf('freeze'); if (f > 0 && visBar(f)) E.add(f); }
+    if (NBar < 2 || !E.size) note = 'the clip is too short for a plates section';
     else {
-      let left = Math.min(Math.max(2, Math.round(.4 * NBar)), NBar - 2, E.size);
+      const target = Math.max(1, Math.min(Math.round(.5 * NBar), E.size)); let left = target;
       const drops = (grid.drops || []).map(t => t);
       const kicks = barStarts.map((b, i) => { let s = 0, c = 0; for (let k = b; k < Math.min(nb, b + 4); k++) { s += kickAt(k); c++; } return c ? s / c : 0; });
       const kmax = Math.max(...kicks, 1e-6);
@@ -128,12 +128,21 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
         if (clash) continue;
         for (let j = w.i; j < w.i + w.L; j++) stages[j] = 'P'; left -= w.L;
       }
+      // fill up to ~half: first isolated single-bar runs, then grow runs up to 4 bars; never merge two runs
+      const runLen = i => { let a = i, b = i; while (a - 1 >= 0 && taken(a - 1)) a--; while (b + 1 < NBar && taken(b + 1)) b++; return b - a + 1; };
+      for (let pass = 0; pass < 2 && left > 0; pass++) for (let i = 1; i < NBar && left > 0; i++) {
+        if (taken(i) || !E.has(i)) continue;
+        const l = taken(i - 1), r = i + 1 < NBar && taken(i + 1);
+        if (pass === 0 ? (l || r) : (l && r) || (!l && !r) || runLen(l ? i - 1 : i + 1) >= 4) continue;
+        stages[i] = 'P'; left--;
+      }
     }
   }
   const runs = [];
   for (let i = 0; i < NBar; i++) if (stages[i] === 'P' && (i === 0 || stages[i - 1] !== 'P')) { let j = i; while (j + 1 < NBar && stages[j + 1] === 'P') j++; runs.push({b0: i, b1: j + 1, t0: i === 0 && scene === 'plates' ? 0 : barT(i), t1: barEnd(j)}); }
   if (!runs.length) return DOTS(plan, 'mix', note);
   if (scene === 'plates') { plan.freeze = null; plan.reform = null; plan.fly = null; }
+  if (plan.reform && stages[NBar - 1] === 'P') plan.reform = null;           // a plates ending replaces the dots re-form
   const inRunT = t => runs.findIndex(r => t >= r.t0 - 1e-6 && t < r.t1 - 1e-6);
   // --- stage bar parameters
   let hoopPrev = [], lastAz = RS() * 6.283;
@@ -273,6 +282,10 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene}) {
   }
   ghosts.forEach((g, i) => { const tc = ghosts[i + GHOST.cap], tk = ghosts[i + GHOST.keep];
     g.fade = Math.min(tc ? tc.t : Infinity, Math.max(g.t + GHOST.life, tk ? tk.t : Infinity)); });
+  if (stages[NBar - 1] === 'P') {                // plates ending: the ring collapses ghost by ghost, oldest first, before the clip ends
+    const t0 = barT(NBar - 1) + .25 * P, span = Math.max(0, dur - t0 - GHOST.collapse - .05), fin = ghosts.filter(g => g.t < barT(NBar - 1) && g.fade > t0);
+    fin.forEach((g, k) => { g.fade = Math.min(g.fade, t0 + span * (fin.length > 1 ? k / (fin.length - 1) : 1)); });
+  }
   // --- camera shots (one per plates downbeat, a second mid-bar on quarter / accel bars)
   const shots = []; let prevKind = null, lastTop = -9, az = RC() * 6.283, nP = 0;
   const calmMean = (t0, t1) => { let s2 = 0, c = 0; for (let i = Math.floor(t0 * OH); i <= Math.min(M - 1, Math.ceil(t1 * OH)); i++) { s2 += calm[i]; c++; } return c ? s2 / c : 0; };

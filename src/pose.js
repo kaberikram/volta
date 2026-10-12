@@ -57,14 +57,16 @@ export function stageFit(V) {
   const kS = has.length ? FIG_H / Math.max(1e-3, pct(hs, .9) * (uncut.length >= 3 ? 1 : 1.25)) : 1;
   const rowFloor = (uncut.length ? pct(uncut.map(s => s.rb), .8) : ah - 1) + .5;
   const pds = fillNaN(st.map(s => s.ok ? s.pd : NaN)), px = fillNaN(V.piv.map(p => p[0]));
-  const A = [], off = new Float64Array(N), yb = new Float64Array(N), raw = [];
+  const A = [], off = new Float64Array(N), yb = new Float64Array(N), raw = [], mostCut = has.length > 0 && has.filter(s => s.cut).length / has.length > .6;
   for (let k = 0; k < N; k++) {
     const a = liftSrc(V, px[k], rowFloor / ah, pds[k]); A.push(a);
     const s = st[k];
     if (!s.ok) { off[k] = 0; yb[k] = 0; continue; }
     const feet = kS * (liftSrc(V, px[k], (s.rb + 1) / ah, s.pd)[1] - a[1]);
     let target;
-    if (s.cut) target = clamp(FIG_H - kS * heightSrc(s), 0, 1);
+    // feet below the frame: lift the visible body to its likely height, unless that is how the whole clip is framed,
+    // then it stands on the floor (reads as the dancer standing in the floor haze, not a floating torso)
+    if (s.cut) target = mostCut ? 0 : clamp(FIG_H - kS * heightSrc(s), 0, 1);
     else target = feet < .06 ? 0 : Math.min(1, feet);
     off[k] = target - feet; yb[k] = target;
   }
