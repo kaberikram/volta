@@ -8,7 +8,7 @@ import {LiveSession, liveFx, livePlan} from './live.js';
 
 const $ = id => document.getElementById(id);
 const S = {videoFile: null, audioFile: null, video: null, songBuf: null, A: null, start: 0, mix: null, grid: null, plan: null, playing: false, busy: false, lastExport: null, fx: null, fxSel: -1, fxDrag: null,
-  src: 'video', liveOn: false, recording: false, saved: null, camW: 1280, camH: 720};
+  src: 'video', liveOn: false, scrubbing: false, saved: null, camW: 1280, camH: 720};
 window.dotfx = S;
 const logEl = $('log');
 function logKind(m) {
@@ -168,7 +168,7 @@ function applyFx(seek) {
   if (!S.plan || !S.fx) return;
   S.plan.fx = S.fx.map(k => ({t: k.t, v: k.v}));
   $('planTxt').textContent = describePlan(S.plan);
-  if (S.video) {
+  if (S.video && S.src !== 'cam') {
     const t = seek && S.fxDrag ? S.fxDrag.t : +$('scrub').value * S.video.dur;
     if (seek && S.fxDrag) $('scrub').value = clamp(t / S.video.dur);
     drawFrame(clamp(t, 0, S.video.dur));
@@ -178,7 +178,7 @@ function applyFx(seek) {
 function resetFx() {
   if (!S.video) return;
   const dur = Math.max(0.001, S.video.dur);
-  S.fx = [{t: 0, v: 1}, {t: dur, v: 1}];
+  S.fx = S.src === 'cam' && S.A ? liveFx(S.A) : [{t: 0, v: 1}, {t: dur, v: 1}];
   S.fxSel = -1; S.fxDrag = null;
   if (S.plan) applyFx(false); else drawBeats();
 }
@@ -206,6 +206,7 @@ async function autoPick() {
 
 // ---------- plan / preview ----------
 function showOut() {
+  if (S.src === 'cam') { if (!S.video) { $('outTxt').textContent = `${$('size').value}p · 30 fps`; return; } const [W, H] = liveSize(); $('outTxt').textContent = `${W} × ${H} · 30 fps`; return; }
   const f = fps();
   if (!S.video && $('aspect').value === 'source') { $('outTxt').textContent = `${$('size').value}p · ${f} fps`; return; }
   const [W, H] = outSize(+$('size').value);
@@ -213,7 +214,7 @@ function showOut() {
 }
 function replan() {
   if (S.exporting) { S.replanPending = true; return; }   // the export owns the renderer until it finishes
-  if (S.src === 'cam') { camPlan(); return; }
+  if (S.src === 'cam') { if (S.liveOn) liveReplan(true); else camPlan(); return; }
   showOut();
   if (S.video) $('durTxt').textContent = S.video.dur.toFixed(2) + 's';
   if (!S.video || !S.grid) return;
@@ -235,6 +236,7 @@ async function drawFrame(t) {
 let actx = null, srcNode = null, t0 = 0, off = 0;
 function stop() { if (srcNode) { try { srcNode.stop(); } catch (e) {} srcNode = null; } S.playing = false; $('bPlay').textContent = '▶ Play'; drawBeats(); }
 async function play() {
+  if (S.src === 'cam') { if (S.liveOn) { if (live.playing) live.pause(); else live.play(); } return; }
   if (!S.plan || !S.mix) return; if (S.playing) { stop(); return; }
   actx = actx || new AudioContext(); await actx.resume();
   off = +$('scrub').value * S.video.dur; if (off >= S.video.dur - .05) off = 0;
@@ -258,7 +260,7 @@ async function play() {
 
 // ---------- pipeline ----------
 async function analyze() {
-  if (S.src === 'cam') { if (S.liveOn) return stopLive(); return goLive(false); }
+  if (S.src === 'cam') { if (S.liveOn) return stopLive(); return goLive(); }
   if (S.busy) return; S.videoFile = $('fVideo').files[0] || S.videoFile; S.audioFile = $('fAudio').files[0] || S.audioFile;
   S.keep = $('keepAudio').checked;
   if (!S.videoFile) { log('pick a video first'); return; }
@@ -281,7 +283,7 @@ async function analyze() {
   finally { S.busy = false; setButtons(); }
 }
 async function doExport() {
-  if (S.src === 'cam') { if (S.recording) return stopLive(); return goLive(true); }
+  if (S.src === 'cam') return;                       // webcam mode is live only (no recording)
   if (!S.plan || S.busy) return; S.busy = S.exporting = true; stop(); setButtons();
   const [W, H] = outSize(+$('size').value), F = fps(), dur = S.video.dur, t0 = performance.now();
   let res;
@@ -304,14 +306,14 @@ async function doExport() {
   return res;
 }
 function setButtons() {
-  if (S.src === 'cam') {                              // webcam: Go live -> Record -> Stop, one white action at a time
-    const ready = !!(S.A && S.songBuf), lock = S.liveOn || S.busy;
-    $('bAnalyze').textContent = S.liveOn ? 'Stop' : 'Go live'; $('bAnalyze').disabled = !ready || S.busy || S.recording;
-    $('bExport').textContent = S.recording ? 'Stop' : 'Record'; $('bExport').disabled = !ready || S.busy;
-    $('bAnalyze').classList.toggle('accent', ready && !S.liveOn); $('bExport').classList.toggle('accent', S.liveOn);
-    for (const id of ['bAuto', 'bPlay', 'bFxReset']) $(id).disabled = true;
-    $('bReroll').disabled = lock || !ready;
-    for (const id of ['scene', 'seed', 'fps', 'aspect', 'size', 'palette', 'intensity', 'strobe', 'start', 'scrub', 'snapBar', 'bitrate', 'quality', 'camSel', 'srcVideo', 'srcCam', 'fAudio']) $(id).disabled = lock;
+  if (S.src === 'cam') {                              // webcam: Go live, then Play / Pause / scrub and every setting live
+    const ready = !!(S.A && S.songBuf), on = S.liveOn, busy = !!S.busy;
+    $('bAnalyze').textContent = on ? 'Stop' : 'Go live'; $('bAnalyze').disabled = !ready || busy;
+    $('bAnalyze').classList.toggle('accent', ready && !on); $('bExport').classList.remove('accent'); $('bExport').disabled = true;
+    $('bAuto').disabled = true; $('bPlay').disabled = !on || busy; $('bFxReset').disabled = !ready || busy; $('bReroll').disabled = !ready || busy;
+    for (const id of ['scene', 'seed', 'aspect', 'size', 'palette', 'intensity', 'strobe', 'start', 'snapBar', 'bitrate', 'quality']) $(id).disabled = busy;
+    $('scrub').disabled = busy || !ready; $('fps').disabled = true;                 // live always runs at 30 fps
+    for (const id of ['camSel', 'srcVideo', 'srcCam', 'fAudio']) $(id).disabled = busy || on;     // Stop first
     return;
   }
   $('bAnalyze').textContent = 'Analyse'; $('bExport').textContent = 'Export';
@@ -332,23 +334,19 @@ function bindFileName(id, empty) {
 
 // ---------- live webcam mode
 const live = S.liveSession = new LiveSession(R, {log,
-  onCount: n => { $('countTxt').hidden = !(n > 0); $('countTxt').textContent = n > 0 ? String(n) : ''; },
   onTime: (t, dur) => { const now = performance.now(); if (now - (S.liveDraw || 0) < 120) return; S.liveDraw = now;
-    $('scrub').value = t / dur; $('time').textContent = t.toFixed(2) + 's'; drawBeats();
-    if (S.recording) { const r = live.recSeconds(); $('recTxt').textContent = `REC ${Math.floor(r / 60)}:${String(Math.floor(r % 60)).padStart(2, '0')}`; } },
+    if (!S.scrubbing) $('scrub').value = t / dur; $('time').textContent = t.toFixed(2) + 's'; drawBeats(); },
   onState: st => {
-    if (st === 'recording') { $('recTxt').hidden = false; return; }
-    if (st === 'idle') { S.liveOn = false; S.recording = false; $('recTxt').hidden = true; $('countTxt').hidden = true; setButtons(); if (S.src === 'cam') S.video = camVideo();
+    $('bPlay').textContent = st === 'playing' ? '❚❚ Pause' : '▶ Play';
+    if (st === 'idle') { S.liveOn = false; delete document.body.dataset.live; setButtons(); if (S.src === 'cam') S.video = camVideo();
       if (S.plan) $('planTxt').textContent = describePlan(S.plan); drawBeats(); }
-  },
-  onRecorded: ({blob, ext}) => { const a = $('dl'); if (a.href) URL.revokeObjectURL(a.href); a.href = URL.createObjectURL(blob); a.download = `volta_live_${Date.now()}.${ext}`;
-    a.textContent = `Download ${ext.toUpperCase()} (${(blob.size / 1e6).toFixed(1)} MB)`; a.style.display = 'inline-block'; log(`recorded ${ext} ${(blob.size / 1e6).toFixed(1)} MB`); }});
+  }});
 // the stand-in analysis for the timeline in webcam mode: the whole song, no frames yet
 const camVideo = () => ({live: true, fps: 30, step: 1, n: 0, dur: S.A ? S.A.duration : 0, srcW: S.camW, srcH: S.camH, w: 640, h: Math.round(640 * S.camH / S.camW), aw: 266, ah: 150, dm: [], area: [], piv: [], motion: []});
 function camPlan() {
   if (!S.A || S.liveOn) return;
   S.video = camVideo(); S.start = 0;
-  S.plan = livePlan(S.A, S.video, opts()); bindFx(S.plan);
+  S.plan = livePlan(S.A, S.video, opts()); bindFx(S.plan); document.body.dataset.ready = '1';      // the timeline picks where to go live
   $('planTxt').textContent = describePlan(S.plan); $('durTxt').textContent = S.A.duration.toFixed(2) + 's';
   showOut(); showScene(); drawWave(); drawBeats(); setButtons();
 }
@@ -378,7 +376,7 @@ async function openCam() {
   }
 }
 function liveSize() { const [W, H] = outSize(+$('size').value), k = Math.min(1, 1280 / Math.max(W, H)); return [Math.round(W * k / 2) * 2, Math.round(H * k / 2) * 2]; }
-async function goLive(record) {
+async function goLive() {
   if (!S.A || !S.songBuf) { log('pick a song first'); return; }
   if (!live.stream && !(await openCam())) return;
   S.busy = true; setButtons();
@@ -387,25 +385,45 @@ async function goLive(record) {
     const mode = await live.loadModels(S.liveSegmenter);
     if (mode === 'luma') log('live: no person detection here, the dots use brightness depth');
     stop(); const [W, H] = liveSize(); R.setSize(W, H);
-    S.liveOn = true; S.recording = record; S.busy = false; setButtons();
-    document.body.dataset.ready = '1'; $('dl').style.display = 'none';
-    S.plan = await live.start({songBuf: S.songBuf, A: S.A, opts: opts(), fx: S.fx, record, countIn: S.countIn ?? 3});
-    showScene(); $('planTxt').textContent = describePlan(S.plan);
-    log(`live: ${record ? 'recording a take' : 'take'} at ${W}x${H}, ${S.plan.runs.length} plates sections over ${S.A.duration.toFixed(0)}s`);
-  } catch (e) { S.liveOn = S.recording = false; log('ERROR live ' + e.message); console.error(e); }
-  finally { S.busy = false; setButtons(); }
+    const at = clamp(+$('scrub').value) * S.A.duration;
+    S.plan = await live.start({songBuf: S.songBuf, A: S.A, opts: opts(), fx: S.fx, at}); bindFx(S.plan);
+    S.liveOn = true; document.body.dataset.ready = '1'; document.body.dataset.live = '1';
+    showOut(); showScene(); $('planTxt').textContent = describePlan(S.plan);
+    log(`live at ${W}x${H} from ${at.toFixed(1)}s: ${S.plan.runs.length} plates sections over ${S.A.duration.toFixed(0)}s`);
+  } catch (e) { S.liveOn = false; log('ERROR live ' + e.message); console.error(e); }
+  finally { S.busy = false; setButtons(); if (S.liveOn) $('bPlay').focus(); }       // Space now plays / pauses
 }
-async function stopLive() { await live.stop(true); }
+async function stopLive() { await live.stop(); $('bAnalyze').focus(); }
+/** settings changed while live: a new plan in place (the ring, camera and song position carry over) */
+function liveReplan(full) {
+  const [W, H] = liveSize(); R.setSize(W, H);
+  const p = live.replan(opts(), S.fx); if (!p) return; S.plan = p; bindFx(S.plan);
+  if (full) { showOut(); showScene(); $('planTxt').textContent = describePlan(S.plan); }
+  drawBeats();
+}
+let lrT = 0, lrPending = null;
+function liveReplanSoon() {          // slider drags: at most every ~120 ms, the full refresh waits for the release
+  const now = performance.now(), wait = 120 - (now - lrT);
+  if (wait <= 0) { lrT = now; liveReplan(false); }
+  else if (!lrPending) lrPending = setTimeout(() => { lrPending = null; lrT = performance.now(); if (S.liveOn) liveReplan(false); }, wait);
+}
+/** move the playhead to u (0..1): clip mode pauses and redraws; live pauses the song and re-performs from there */
+function scrubTo(u) {
+  $('scrub').value = clamp(u);
+  if (S.src === 'cam') { if (S.liveOn && S.A) { live.pause(); live.seek(clamp(u) * S.A.duration); } if (S.A) $('time').textContent = (clamp(u) * S.A.duration).toFixed(2) + 's'; drawBeats(); return; }
+  if (S.playing) stop(); if (S.video) drawFrame(clamp(u) * S.video.dur); drawBeats();
+}
 async function setSource(src) {
   if (S.src === src || S.busy || S.liveOn) return;
   stop();
   if (src === 'cam') {
-    S.saved = {video: S.video, plan: S.plan, start: S.start, mix: S.mix, grid: S.grid, fx: S.fx, A: S.A, songBuf: S.songBuf, ready: document.body.dataset.ready};
-    S.video = S.plan = S.mix = S.grid = null; S.fx = null; delete document.body.dataset.ready;
+    S.saved = {video: S.video, plan: S.plan, start: S.start, mix: S.mix, grid: S.grid, fx: S.fx, A: S.A, songBuf: S.songBuf, ready: document.body.dataset.ready, scrub: $('scrub').value};
+    S.video = S.plan = S.mix = S.grid = null; S.fx = null; delete document.body.dataset.ready; $('scrub').value = 0; $('time').textContent = '0.00s';
   } else {
-    await live.stop(false); live.closeCamera(); delete $('camWell').dataset.on;
+    await live.stop(); live.closeCamera(); delete $('camWell').dataset.on;
     const v = S.saved || {}; Object.assign(S, {video: v.video || null, plan: v.plan || null, start: v.start || 0, mix: v.mix || null, grid: v.grid || null, fx: v.fx || null, A: v.A || null, songBuf: v.songBuf || null});
     if (v.ready) document.body.dataset.ready = v.ready; else delete document.body.dataset.ready;
+    $('scrub').value = v.scrub || 0; $('time').textContent = ((v.scrub || 0) * (S.video ? S.video.dur : 0)).toFixed(2) + 's';
   }
   S.src = src; document.body.dataset.src = src;
   $('srcVideo').setAttribute('aria-pressed', String(src === 'video')); $('srcCam').setAttribute('aria-pressed', String(src === 'cam'));
@@ -431,8 +449,10 @@ $('bPlay').onclick = play;
 $('bFxReset').onclick = resetFx;
 const beats = $('beats');
 beats.addEventListener('pointerdown', e => {
-  if (!S.fx || !S.plan || e.button !== 0 || S.exporting) return;
-  const p = fxPoint(beats, e), i = fxHit(beats, p.x, p.y);
+  if (e.button !== 0 || S.exporting || S.busy) return;
+  const p = fxPoint(beats, e);
+  if (p.y < 14 && document.body.dataset.ready && S.video) { e.preventDefault(); scrubTo(p.x / p.W); return; }     // the time ruler seeks (fade keys sit below it)
+  const i = S.fx && S.plan ? fxHit(beats, p.x, p.y) : -1;
   if (i < 0) return;
   S.fxSel = i; S.fxDrag = S.fx[i];
   beats.setPointerCapture(e.pointerId);
@@ -471,6 +491,14 @@ beats.addEventListener('dblclick', e => {
   S.fxSel = S.fx.indexOf(key);
   applyFx(false);
 });
+window.addEventListener('keydown', e => {             // Space: play / pause (not while typing; a focused Play presses itself)
+  if (e.code !== 'Space' || e.repeat) return;
+  const el = document.activeElement, tag = el && el.tagName;
+  if (el === $('bPlay') || tag === 'TEXTAREA' || tag === 'SELECT' || (tag === 'INPUT' && el.type !== 'range')) return;
+  if (tag === 'BUTTON') el.blur();                    // so Space doesn't press the last clicked button (Reroll, Reset fade...) again
+  if ($('bPlay').disabled) return;
+  e.preventDefault(); $('bPlay').click();
+});
 window.addEventListener('keydown', e => {
   if (e.key !== 'Backspace' && e.key !== 'Delete') return;
   const tag = document.activeElement && document.activeElement.tagName;
@@ -483,7 +511,8 @@ window.addEventListener('keydown', e => {
 });
 $('start').oninput = () => { $('startTxt').textContent = (+$('start').value).toFixed(2) + 's'; S.start = +$('start').value; drawWave(); };
 $('start').onchange = () => S.A && !S.keep && setStart(+$('start').value + .010, 'manual');
-$('scrub').oninput = () => { if (S.playing) stop(); if (S.video) drawFrame(+$('scrub').value * S.video.dur); drawBeats(); };
+$('scrub').oninput = () => { S.scrubbing = true; scrubTo(+$('scrub').value); };
+$('scrub').onchange = () => { S.scrubbing = false; };
 for (const id of ['seed', 'fps', 'aspect', 'size']) $(id).onchange = replan;
 const paletteNotes = {reference: 'red, cream, gold, blue'};
 const sceneNotes = {mix: 'alternates dots with pose-ghost plates', dots: 'the dot looks only', plates: 'pose ghosts on a laser stage'};
@@ -499,10 +528,10 @@ function showScene() {
 $('scene').onchange = () => { showScene(); replan(); };
 function showPalette() { $('paletteHint').textContent = paletteNotes[$('palette').value] || ''; }
 $('palette').onchange = () => { showPalette(); replan(); };
-for (const [id, txt] of [['intensity', 'intTxt'], ['strobe', 'strTxt']]) { $(id).oninput = () => $(txt).textContent = (+$(id).value).toFixed(2); $(id).onchange = replan; }
+for (const [id, txt] of [['intensity', 'intTxt'], ['strobe', 'strTxt']]) { $(id).oninput = () => { $(txt).textContent = (+$(id).value).toFixed(2); if (S.src === 'cam' && S.liveOn) liveReplanSoon(); }; $(id).onchange = replan; }
 window.addEventListener('resize', drawWave);
 
 // automation hooks (used by the headless test; harmless otherwise)
-S.api = {analyze, doExport, replan, autoPick, setStart, setButtons, setSource, prepareSong, goLive, stopLive, set: (id, v) => { $(id).value = v; if (id === 'keepAudio') $(id).checked = !!v; },
+S.api = {analyze, doExport, replan, autoPick, setStart, setButtons, setSource, prepareSong, goLive, stopLive, scrubTo, set: (id, v) => { $(id).value = v; if (id === 'keepAudio') $(id).checked = !!v; },
   exportBase64: async () => { const r = S.lastExport; const buf = new Uint8Array(await r.blob.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 32768) s += String.fromCharCode.apply(null, buf.subarray(i, i + 32768)); return btoa(s); }};
 log('ready - WebGL2 OK. WebGPU: ' + ('gpu' in navigator ? 'API present' : 'not available (depth will use WASM)') + ', WebCodecs: ' + ('VideoEncoder' in window));

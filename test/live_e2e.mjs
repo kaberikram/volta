@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Live webcam mode, headless (no camera, no models):
-//  1. harness: the synthetic dancer through the real live analyzer / bundle / director / renderer (test/live.html)
-//  2. app smoke test: the real editor with Chromium's fake camera; MediaPipe is unreachable here, so the take runs in
-//     brightness-depth mode (dots only); Go live -> Record -> Stop must produce a playable file with video and audio.
-// Writes test/out/live_contact.png and test/out/live_take.(webm|mp4).
+//  1. harness: the synthetic dancer through the real live analyzer and LiveCore (bundle, director, renderer) on two
+//     clocks (camera time, song time): depth, fit, prints, orbit, then the transport (seek back / forward, paused with
+//     a live camera, holds, live replans) and the edges (no frame yet, starting on dots, a long paused session).
+//  2. app smoke test: the real editor with Chromium's fake camera; MediaPipe is unreachable here, so it runs in
+//     brightness-depth mode (dots only): Go live, Space, scrub, ruler click, settings while live, Stop.
+// Writes test/out/live_contact.png.
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
@@ -53,7 +55,7 @@ async function main() {
     const ms = run.ms.slice(20).sort((a, b) => a - b), med = ms[ms.length >> 1];
     log(`analyzer CPU per frame: median ${med.toFixed(1)} ms, p90 ${ms[Math.floor(ms.length * .9)].toFixed(1)} ms (SwiftShader page; real browsers are faster)`);
     const st = await page.evaluate(() => window.L.stats());
-    check(st.calibrated && st.n === 480, 'live bundle grows frame by frame and calibrates', `n ${st.n}, k ${st.k.toFixed(3)}`);
+    check(st.calibrated && st.n === 500, 'live bundle grows frame by frame (camera time) and calibrates', `n ${st.n}, k ${st.k.toFixed(3)}`);
     check(st.dmKept <= 80 && st.pool === 16, 'memory stays bounded (depth ring, GPU frame pool)', `dm kept ${st.dmKept}, pool ${st.pool}`);
     const pr = await page.evaluate(() => [window.L.probe(6.5), window.L.probe(3.4), window.L.probe(12.5)]);
     for (const [i, p] of pr.entries()) check(p.person > p.background + .2, `depth: person in front of the room (${['still', 'crouch', 'pan'][i]})`, JSON.stringify(Object.fromEntries(Object.entries(p).map(([k, v]) => [k, v == null ? v : +v.toFixed(3)]))));
@@ -68,6 +70,29 @@ async function main() {
     check(stage.length >= 2 && run.shots.length - stage.length >= 1, 'live frames render both scenes', `${stage.length} stage / ${run.shots.length - stage.length} dots`);
     check(!bad.length, 'GL state clean after live frames', JSON.stringify(bad.map(s => s.gl)));
     writePng(path.join(OUT, 'live_contact.png'), await page.evaluate(u => window.L.sheet(u), run.shots.map(s => s.png)));
+    // transport
+    const tr = await page.evaluate(() => window.L.transport()), b = tr.back;
+    check(b.after < b.before && b.same && b.maxT <= b.tb + 1e-9 && b.orbitN === b.nExp && b.jOk, 'seek back: later prints go (in place), the ring and the grid rewind', JSON.stringify({tb: +b.tb.toFixed(2), before: b.before, after: b.after, orbitN: b.orbitN}));
+    check(!b.stage || b.drawn === b.expect, 'seek back: every ghost still on screen is drawn (slots restored)', JSON.stringify({stage: b.stage, drawn: b.drawn, expect: b.expect}));
+    check(tr.replay.added >= 1 && tr.replay.sorted && tr.replay.unique && tr.replay.perBarOk, 'playing on after a seek prints again, no burst, in order', JSON.stringify(tr.replay));
+    check(tr.fwd.added <= 1 && Math.abs(tr.fwd.angAfter - tr.fwd.angPred) < 1e-6, 'seek forward: no backlog of prints, the orbit carries on', JSON.stringify(tr.fwd));
+    check(tr.paused.fi2 === tr.paused.top && tr.paused.fi2 > tr.paused.fi1 && tr.paused.differ, 'paused: the newest camera frame is on screen', JSON.stringify(tr.paused));
+    check(tr.hold.inside === tr.hold.pin && tr.hold.replanned === tr.hold.pin && tr.hold.after === tr.hold.top && tr.hold.top > tr.hold.pin, 'a hold shows the frame it entered on (pinned, also across a settings change), then the camera again', JSON.stringify(tr.hold));
+    check(!tr.flash || tr.flash.held < tr.flash.open - 3, 'paused: no beat flash held on screen', JSON.stringify(tr.flash || 'no flash frame'));
+    const rp = tr.replan;
+    check(rp.sameRing && rp.sameOrbit && rp.phi0 && rp.seedsKept, 'live replan (palette, strobe, punch, seed) keeps the ring, its orbit and its plates', JSON.stringify(rp));
+    check(rp.matsOk && rp.matsChanged, 'a palette change recolours the printed ghosts');
+    check(rp.drawn == null || rp.drawn === rp.expect, 'after a replan every ghost on screen is drawn', JSON.stringify({drawn: rp.drawn, expect: rp.expect}));
+    check(rp.ms < 120, 'a live replan is quick', `${rp.ms.toFixed(1)} ms (16 s song, SwiftShader)`);
+    const d = tr.dots;
+    check(d.scene === 'dots' && d.dotsGhosts === 0 && d.maxAfter <= d.tSeek + 1e-9 && d.back && d.burst <= 1, 'dots and back: the ring waits, a seek on dots still rewinds it, no backlog', JSON.stringify(d));
+    const ed = await page.evaluate(() => window.L.edges());
+    check(ed.empty.core === null && ed.empty.r === -1 && !ed.empty.gl.error, 'before the first camera frame nothing renders and nothing throws', JSON.stringify(ed.empty));
+    check(Number.isFinite(ed.phi0) && ed.orbit && ed.mix.phi0 === ed.phi0 && ed.mix.ghosts > 0 && ed.mix.finite, 'starting on dots: the ring is ready when plates come in', JSON.stringify(ed.mix));
+    const m = ed.memory;
+    check(m.grew === 2000 && m.stats0 && m.statsTop && m.env <= 660 && m.pool === 16 && m.dmKept <= 80 && m.render, 'long paused session: memory stays bounded', JSON.stringify(m));
+    check(ed.gap.added === 2, 'a 10 s camera gap (hidden tab) continues instead of back-filling', JSON.stringify(ed.gap));
+    check(ed.replan4 < 150 && !ed.gl.error, 'a live replan of a 4-minute song', `${ed.replan4.toFixed(1)} ms median (SwiftShader)`);
     const lu = await page.evaluate(async () => { const r = await window.L.run({secs: 2, size: 360, luma: true, shots: [40]}); const p = window.L.probe(1); return {scene: window.L.last.plan.scene, ok: !r.shots[0].gl.error, p}; });
     check(lu.scene === 'dots' && lu.ok, 'brightness-depth fallback (no person detection) runs dots only', JSON.stringify(lu.scene));
     await page.close();
@@ -76,28 +101,48 @@ async function main() {
     const app = await ctx.newPage(); app.on('pageerror', e => errs.push('app: ' + e.message)); app.on('console', m => { if (/^\[dotfx\]/.test(m.text())) log('app', m.text().slice(8, 200)); });
     await app.route('**/*', r => (isLocal(r.request().url()) ? r.continue() : r.abort()));
     await app.goto(`${origin}/index.html`); await app.waitForFunction(() => window.dotfx && window.dotfx.api);
+    await app.evaluate(() => { window.dotfx.plan = {marker: 1}; document.getElementById('scrub').value = .3; });     // a clip edit to come back to
     await app.click('#srcCam'); await app.waitForFunction(() => document.getElementById('camWell').dataset.on === '1', null, {timeout: 15000});
     check(await app.evaluate(() => document.body.dataset.src === 'cam' && !!document.getElementById('camView').srcObject), 'Webcam source opens the camera');
     await app.setInputFiles('#fAudio', wav); await app.waitForFunction(() => window.dotfx.A && window.dotfx.plan, null, {timeout: 60000});
-    const pre = await app.evaluate(() => ({bpm: window.dotfx.A.bpm, go: document.getElementById('bAnalyze').textContent, goOn: !document.getElementById('bAnalyze').disabled, runs: window.dotfx.plan.runs.length}));
-    check(Math.abs(pre.bpm - 128) < 2 && pre.go === 'Go live' && pre.goOn, 'song analysed; Go live ready', JSON.stringify(pre));
-    await app.evaluate(() => { window.dotfx.countIn = 1; });
-    await app.click('#bExport');                                          // Record: a fresh take with the recorder on
+    const shown = id => app.evaluate(i => getComputedStyle(document.getElementById(i)).display !== 'none', id);
+    const pre = await app.evaluate(() => ({bpm: window.dotfx.A.bpm, go: document.getElementById('bAnalyze').textContent, goOn: !document.getElementById('bAnalyze').disabled, play: document.getElementById('bPlay').disabled, scrub: !document.getElementById('scrub').disabled}));
+    check(Math.abs(pre.bpm - 128) < 2 && pre.go === 'Go live' && pre.goOn && pre.play && pre.scrub, 'song analysed; Go live ready, the timeline picks the start', JSON.stringify(pre));
+    check(!(await shown('bExport')) && !(await shown('dl')), 'no recording in webcam mode (Export and Download hidden)');
+    await app.evaluate(() => { const s = document.getElementById('scrub'); s.value = .1; s.dispatchEvent(new Event('input')); s.dispatchEvent(new Event('change')); });
+    await app.click('#bAnalyze');                                         // Go live: from the scrub position, then plays
     await app.waitForFunction(() => window.dotfx.liveOn && window.dotfx.liveSession.state === 'live', null, {timeout: 30000});
-    await app.waitForTimeout(3500);
-    const mid = await app.evaluate(() => ({n: window.dotfx.liveSession.V.n, scene: window.dotfx.plan.scene, note: window.dotfx.plan.sceneNote, rec: document.getElementById('recTxt').textContent, btn: document.getElementById('bExport').textContent, mode: window.dotfx.liveSession.mode}));
-    check(mid.n > 30 && mid.btn === 'Stop' && /REC/.test(mid.rec), 'live take runs and records', JSON.stringify(mid));
-    check(mid.mode !== 'luma' || (mid.scene === 'dots' && /person detection/.test(mid.note)), 'without person detection the take is dots only, with a note', JSON.stringify({mode: mid.mode, scene: mid.scene}));
-    await app.click('#bExport');                                          // Stop: saves the take
-    await app.waitForFunction(() => document.getElementById('dl').style.display !== 'none', null, {timeout: 20000});
-    const file = await app.evaluate(async () => { const a = document.getElementById('dl'), b = await (await fetch(a.href)).blob(), u8 = new Uint8Array(await b.arrayBuffer()); let s = ''; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode.apply(null, u8.subarray(i, i + 32768)); return {name: a.download, type: b.type, b64: btoa(s)}; });
-    const take = path.join(OUT, 'live_take.' + (/mp4/.test(file.type) ? 'mp4' : 'webm')); fs.writeFileSync(take, Buffer.from(file.b64, 'base64'));
-    let probe = ''; try { probe = execSync(`ffprobe -v error -show_entries stream=codec_type,codec_name -show_entries format=duration -of compact "${take}"`, {encoding: 'utf8'}); } catch (e) { probe = 'ffprobe failed: ' + e.message; }
-    const dur = +((probe.match(/duration=([\d.]+)/) || [])[1] || 0);
-    check(/codec_type=video/.test(probe) && /codec_type=audio/.test(probe) && dur > 2, 'recording has picture and song', `${file.type} ${probe.replace(/\n/g, ' ')}`);
-    const after = await app.evaluate(() => ({live: window.dotfx.liveOn, go: document.getElementById('bAnalyze').textContent, rec: document.getElementById('bExport').textContent}));
-    check(!after.live && after.go === 'Go live' && after.rec === 'Record', 'controls return after the take', JSON.stringify(after));
-    await app.click('#srcVideo'); check(await app.evaluate(() => document.body.dataset.src === 'video' && !document.getElementById('camView').srcObject), 'back to Video closes the camera');
+    await app.waitForFunction(() => window.dotfx.liveSession.playing, null, {timeout: 10000});
+    const ses = () => app.evaluate(() => { const L = window.dotfx.liveSession; return {t: L.time(), playing: L.playing, renders: L.renders, state: L.state, n: L.V.n, dur: L.dur, btn: document.getElementById('bPlay').textContent}; });
+    const a0 = await ses(); await app.waitForTimeout(1500); const a1 = await ses();
+    check(a0.t >= .1 * a0.dur - .2 && a1.t > a0.t + .5 && a1.n > a0.n && a1.btn.includes('Pause'), 'Go live starts at the playhead and plays; the camera runs', JSON.stringify({t0: +a0.t.toFixed(2), t1: +a1.t.toFixed(2), n: a1.n, btn: a1.btn}));
+    await app.keyboard.press('Space');                                    // focus is on Play after Go live: Space pauses
+    await app.waitForTimeout(200); const b0 = await ses(); await app.waitForTimeout(1500); const b1 = await ses();
+    check(b0.state === 'live' && !b0.playing && Math.abs(b1.t - b0.t) < 1e-6 && b1.renders > b0.renders && b1.n > b0.n, 'Space pauses: the song stops, the live picture keeps rendering', JSON.stringify({t: +b1.t.toFixed(3), renders: [b0.renders, b1.renders], n: [b0.n, b1.n]}));
+    await app.evaluate(() => { const s = document.getElementById('scrub'); s.value = .5; s.dispatchEvent(new Event('input')); s.dispatchEvent(new Event('change')); });
+    const c0 = await ses(); check(Math.abs(c0.t - .5 * c0.dur) < .05 && !c0.playing, 'scrub moves the song while live', `t ${c0.t.toFixed(2)} of ${c0.dur.toFixed(1)}`);
+    await app.click('#bPlay'); await app.waitForTimeout(1200); const c1 = await ses();
+    check(c1.playing && c1.t > c0.t + .4, 'Play resumes from the new position', `t ${c1.t.toFixed(2)}`);
+    const box = await app.locator('#beats').boundingBox(); await app.mouse.click(box.x + box.width * .25, box.y + 6);
+    const c2 = await ses(); check(Math.abs(c2.t - .25 * c2.dur) < .1 && !c2.playing, 'a click on the time ruler seeks', `t ${c2.t.toFixed(2)}`);
+    // settings while live
+    await app.evaluate(() => { const set = (id, v, ev) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event(ev)); };
+      set('strobe', .3, 'input'); set('strobe', .3, 'change'); set('palette', 'cool', 'change'); set('scene', 'plates', 'change'); set('size', '540', 'change'); set('seed', '7', 'change'); });
+    await app.evaluate(() => { const e = document.getElementById('intensity'); e.value = .4; e.dispatchEvent(new Event('input')); });
+    await app.waitForTimeout(400);
+    const st2 = await app.evaluate(() => { const S = window.dotfx, R = S.renderer, L = S.liveSession; return {live: S.liveOn && L.state === 'live', same: R.plan === S.plan && L.plan === S.plan, strobe: S.plan.strobe, palette: S.plan.palette, seed: S.plan.seed, intensity: S.plan.intensity,
+      scene: S.plan.scene, note: S.plan.sceneNote, W: R.W, H: R.H, out: document.getElementById('outTxt').textContent, mode: L.mode}; });
+    check(st2.live && st2.same && st2.strobe === .3 && st2.palette === 'cool' && st2.seed === 7 && st2.intensity === .4, 'settings change while live (strobe, palette, seed, punch while dragging)', JSON.stringify(st2));
+    check(Math.max(st2.W, st2.H) <= 1280 && st2.out.startsWith(`${st2.W} × ${st2.H} · 30 fps`), 'output size changes live; the header shows the live size', JSON.stringify({W: st2.W, H: st2.H, out: st2.out}));
+    check(st2.mode !== 'luma' || (st2.scene === 'dots' && /person detection/.test(st2.note)), 'without person detection live stays dots only, with a note', JSON.stringify({mode: st2.mode, scene: st2.scene}));
+    const r0 = (await ses()).renders; await app.waitForTimeout(600); check((await ses()).renders > r0, 'still rendering after the changes');
+    await app.click('#bAnalyze');                                         // Stop
+    await app.waitForFunction(() => window.dotfx.liveSession.state === 'idle' && !window.dotfx.liveOn, null, {timeout: 10000});
+    const after = await app.evaluate(() => ({go: document.getElementById('bAnalyze').textContent, live: document.body.dataset.live || null, play: document.getElementById('bPlay').disabled, cam: !!document.getElementById('camView').srcObject}));
+    check(after.go === 'Go live' && !after.live && after.play && after.cam, 'Stop leaves live (the camera preview stays on)', JSON.stringify(after));
+    await app.click('#srcVideo');
+    const back = await app.evaluate(() => ({src: document.body.dataset.src, cam: !!document.getElementById('camView').srcObject, plan: window.dotfx.plan && window.dotfx.plan.marker, scrub: +document.getElementById('scrub').value}));
+    check(back.src === 'video' && !back.cam && back.plan === 1 && Math.abs(back.scrub - .3) < 1e-6, 'back to Video closes the camera and restores the clip edit', JSON.stringify(back));
   } catch (e) { check(false, 'run', e.stack || e.message); }
   finally { for (const e of errs) check(false, 'page error', e); await browser.close(); srv.close(); }
   const fails = results.filter(r => !r).length; log(`live: ${results.length - fails} passed, ${fails} failed`); process.exitCode = fails ? 1 : 0;

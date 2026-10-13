@@ -290,6 +290,8 @@ function addStage(plan, {grid, video, bt, barStarts, off, NBar, role, scene, liv
   return Object.assign(plan, {scene, sceneNote: note, stages, runs, stageBars, shots, ghosts});
 }
 
+/** a ghost's material under palette sp (same pick as ghostMaker; the plate style stays, so a palette change only recolours). */
+export const ghostMat = (g, sp) => { const mats = sp.mats[g.cls]; return mats ? mats[Math.floor(hsh(g.seed * 977.13 + g.i * 13.7 + 2) * mats.length) % mats.length] : g.mat; };
 /** ghost attributes (material, plate style, ring slot, timing), shared by the planner and the live director.
  *  Returns add(ghosts, candidate, frame, seeded) which appends a ghost; the draw order of h() is part of the plan. */
 export function ghostMaker({seed, P, sp, phi0, video, fit, st, inRunT}) {
@@ -313,7 +315,7 @@ export function ghostMaker({seed, P, sp, phi0, video, fit, st, inRunT}) {
     }
     if (!slot) slot = best;
     const hold = seeded ? 0 : clamp(.5 * P, .2, .3), glide = seeded ? 0 : clamp(1.5 * P, .6, 1);
-    const g = {i, t: c.t, f, di: k, kind: seeded ? 'seed' : c.beat && c.move ? 'both' : c.move ? 'move' : 'beat', mat, style, ang: slot.A, r: slot.r, w,
+    const g = {i, t: c.t, f, di: k, kind: seeded ? 'seed' : c.beat && c.move ? 'both' : c.move ? 'move' : 'beat', mat, cls, seed, style, ang: slot.A, r: slot.r, w,
       yawOff: 40 * Math.PI / 180 * (2 * h(i, 3) - 1), spin: (h(i, 4) < .5 ? -1 : 1) * (.25 + .35 * h(i, 6)), hold, glide, seeded: !!seeded,
       root: fit.dpos[k].slice(), hidden: !seeded && inRunT(c.t) < 0, fade: Infinity};
     ghosts.push(g); return g;
