@@ -386,6 +386,10 @@ export function describePlan(plan) {
     if (plan.sceneNote) lines.push('note: ' + plan.sceneNote);
   }
   if (plan.fx && plan.fx.length) lines.push('fx ' + plan.fx.map(k => `${k.t.toFixed(2)}=${k.v.toFixed(2)}`).join(' '));
+  if (plan.gross && plan.gross.amount > 0) {
+    const g = plan.gross;
+    lines.push(`gross ${g.mode} ${g.div} x${g.amount.toFixed(2)} ${(g.t0 || 0).toFixed(2)}-${(g.t1 == null ? plan.dur || 0 : g.t1).toFixed(2)}s`);
+  }
   const rows = plan.sched.map(e => ({t: e.t, s: `${e.t.toFixed(3)}s  ${e.look}${e.burst ? ' (strobe)' : ''}  pitch ${e.pitch}`}));
   for (const g of plan.ghosts || []) if (g.t >= 0) rows.push({t: g.t + 1e-7, s: `${g.t.toFixed(3)}s  ghost ${g.kind} ${g.mat}/${g.style}${g.hidden ? ' (hidden)' : ''}`});
   for (const c of plan.shots || []) rows.push({t: c.t + 2e-7, s: `${c.t.toFixed(3)}s  cam ${c.kind}${c.high ? ' high' : ''}${c.still ? ' (still)' : ''}`});

@@ -5,10 +5,12 @@ import {DotRenderer} from './renderer.js';
 import {exportMp4, exportWebm} from './exporter.js';
 import {clamp} from './util.js';
 import {LiveSession, liveFx, livePlan} from './live.js';
+import {DIVS, GROSS_PRESETS, normalizeGross, presetGross, randomPattern} from './gross.js';
 
 const $ = id => document.getElementById(id);
 const S = {videoFile: null, audioFile: null, video: null, songBuf: null, A: null, start: 0, mix: null, grid: null, plan: null, playing: false, busy: false, lastExport: null, fx: null, fxSel: -1, fxDrag: null,
-  src: 'video', liveOn: false, scrubbing: false, saved: null, camW: 1280, camH: 720};
+  src: 'video', liveOn: false, scrubbing: false, saved: null, camW: 1280, camH: 720,
+  grossPat: GROSS_PRESETS.off.pattern.slice(), grossSeed: 1, grossRegion: false, grossDrag: null, grossWriting: false};
 window.dotfx = S;
 const logEl = $('log');
 function logKind(m) {
@@ -92,6 +94,13 @@ function drawBeats() {
     const px = x(b.t), r = 4.5 * dpr; g.fillStyle = b.drop ? accent : ink;
     g.beginPath(); g.moveTo(px, y - r); g.lineTo(px + r * .7, y); g.lineTo(px, y + r); g.lineTo(px - r * .7, y); g.closePath(); g.fill();
     g.fillStyle = mute;
+  }
+  if (S.plan && S.plan.gross && S.plan.gross.amount > 0) {
+    const gr = S.plan.gross, x0 = (gr.t0 || 0) / dur * W, x1 = (gr.t1 == null ? dur : gr.t1) / dur * W;
+    g.fillStyle = accent;
+    g.fillRect(x0, H - 6 * dpr, Math.max(dpr, x1 - x0), 3 * dpr);
+    g.fillRect(x0, ruler, Math.max(dpr, 2), H - ruler);
+    g.fillRect(Math.max(x0, x1 - 2 * dpr), ruler, Math.max(dpr, 2), H - ruler);
   }
   if (S.plan && S.plan.runs) {                       // plates runs along the lane's bottom edge, a tick per pose ghost under the ruler
     g.fillStyle = cssVar('--muted');
@@ -182,6 +191,123 @@ function resetFx() {
   S.fxSel = -1; S.fxDrag = null;
   if (S.plan) applyFx(false); else drawBeats();
 }
+
+// ---------- gross (beat-locked stutter / repeat / gate) ----------
+const GROSS_HINTS = {
+  stutter: 'Retriggers a slice on each division. In and out mark the region. The fade lane ducks it.',
+  repeat: 'Loops the downbeat, or the last few frames, then lets the clip run. Build grows that across the region.',
+  gate: 'Filled steps play. Empty steps cut to black, white, or a freeze. In and out mark the region.',
+};
+function curDur() {
+  if (S.video && S.video.dur) return S.video.dur;
+  if (S.A && S.A.duration) return S.A.duration;
+  return 1e9;
+}
+function readGross(dur) {
+  return normalizeGross({
+    preset: $('grossPreset').value, mode: $('grossMode').value, div: $('grossDiv').value,
+    amount: +$('grossAmount').value, slice: +$('grossSlice').value, decay: +$('grossDecay').value, variation: +$('grossVar').value,
+    chunk: $('grossChunk').value, frames: +$('grossFrames').value, repeats: +$('grossRepeats').value, build: +$('grossBuild').value,
+    fill: $('grossFill').value, probability: +$('grossProb').value, pattern: S.grossPat, seed: S.grossSeed,
+    t0: S.grossRegion ? +$('grossIn').value : 0, t1: S.grossRegion ? +$('grossOut').value : dur,
+  }, dur);
+}
+function showGross() {
+  const mode = $('grossMode').value, chunk = $('grossChunk').value;
+  $('gross').dataset.mode = mode; $('gross').dataset.chunk = chunk;
+  $('grossAmtTxt').textContent = (+$('grossAmount').value).toFixed(2);
+  $('grossSliceTxt').textContent = (+$('grossSlice').value).toFixed(2);
+  $('grossDecayTxt').textContent = (+$('grossDecay').value).toFixed(2);
+  $('grossVarTxt').textContent = (+$('grossVar').value).toFixed(2);
+  $('grossFramesTxt').textContent = String(Math.round(+$('grossFrames').value));
+  $('grossRepeatsTxt').textContent = String(Math.round(+$('grossRepeats').value));
+  $('grossBuildTxt').textContent = (+$('grossBuild').value).toFixed(2);
+  $('grossProbTxt').textContent = (+$('grossProb').value).toFixed(2);
+  $('grossHint').textContent = GROSS_HINTS[mode] || GROSS_HINTS.stutter;
+  const per = DIVS[$('grossDiv').value] || 2, used = Math.min(16, per * 4);
+  [...$('grossSteps').children].forEach((b, i) => {
+    b.setAttribute('aria-pressed', S.grossPat[i] ? 'true' : 'false');
+    b.classList.toggle('dim', i >= used);
+  });
+  const dur = curDur();
+  if (!S.grossRegion) { $('grossIn').value = '0.00'; $('grossOut').value = dur < 1e8 ? dur.toFixed(2) : ''; }
+}
+function writeGross(g) {
+  S.grossWriting = true;
+  $('grossPreset').value = GROSS_PRESETS[g.preset] ? g.preset : 'custom';
+  $('grossMode').value = g.mode; $('grossDiv').value = g.div; $('grossAmount').value = g.amount;
+  $('grossSlice').value = g.slice; $('grossDecay').value = g.decay; $('grossVar').value = g.variation;
+  $('grossChunk').value = g.chunk; $('grossFrames').value = g.frames; $('grossRepeats').value = g.repeats; $('grossBuild').value = g.build;
+  $('grossFill').value = g.fill; $('grossProb').value = g.probability;
+  S.grossPat = g.pattern.slice(); S.grossSeed = g.seed;
+  S.grossWriting = false; showGross();
+}
+function attachGross(plan) { if (plan) plan.gross = readGross(plan.dur || curDur()); }
+function pushGross() {
+  showGross();
+  if (S.plan) { attachGross(S.plan); $('planTxt').textContent = describePlan(S.plan); }
+  if (S.src === 'cam') { if (S.liveOn && live.core) live.core.dirty = true; drawBeats(); return; }
+  if (S.plan && S.video && !S.exporting) drawFrame(+$('scrub').value * S.video.dur);
+  drawBeats();
+}
+function markGross() {
+  if (!S.grossWriting && $('grossPreset').value !== 'custom') $('grossPreset').value = 'custom';
+  pushGross();
+}
+function nearestMark(t, dur) {
+  const beats = (S.plan && S.plan.beats) || [], marks = [0, dur, ...beats];
+  let best = clamp(t, 0, dur), bd = Infinity;
+  for (const b of marks) { const d = Math.abs(b - t); if (d < bd) { bd = d; best = clamp(b, 0, dur); } }
+  return best;
+}
+function setGrossEdge(which) {
+  const dur = Math.min(curDur(), 1e8);
+  S.grossRegion = true;
+  let t0 = +$('grossIn').value || 0, t1 = +$('grossOut').value || dur;
+  if (which === 'in') t0 = nearestMark(t0, dur); else t1 = nearestMark(t1, dur);
+  if (t1 < t0 + .05) { if (which === 'in') t0 = Math.max(0, t1 - .05); else t1 = Math.min(dur, t0 + .05); }
+  $('grossIn').value = t0.toFixed(2); $('grossOut').value = t1.toFixed(2);
+  markGross();
+}
+function grossHit(c, x, y) {
+  const gr = S.plan && S.plan.gross;
+  if (!gr || !(gr.amount > 0) || !S.video || y < 14) return null;
+  const box = fxBox(c), dur = S.video.dur || .001;
+  const x0 = (gr.t0 || 0) / dur * box.W, x1 = (gr.t1 == null ? dur : gr.t1) / dur * box.W;
+  if (Math.abs(x - x0) <= 8) return 'in';
+  if (Math.abs(x - x1) <= 8) return 'out';
+  if (x > x0 + 8 && x < x1 - 8 && y > box.H - 16) return 'move';
+  return null;
+}
+function ensureSteps() {
+  const box = $('grossSteps'); if (box.childElementCount) return;
+  for (let i = 0; i < 16; i++) {
+    const b = document.createElement('button'); b.type = 'button'; b.setAttribute('aria-label', 'Step ' + (i + 1));
+    b.addEventListener('click', () => { S.grossPat[i] = S.grossPat[i] ? 0 : 1; markGross(); });
+    box.append(b);
+  }
+}
+function bindGross() {
+  ensureSteps();
+  $('grossPreset').onchange = () => {
+    const name = $('grossPreset').value;
+    if (name === 'custom' || !GROSS_PRESETS[name]) return;
+    const keep = S.grossRegion ? {t0: +$('grossIn').value || 0, t1: +$('grossOut').value || 0} : null;
+    writeGross(presetGross(name, curDur()));
+    if (keep) { S.grossRegion = true; $('grossIn').value = (+keep.t0).toFixed(2); $('grossOut').value = (+keep.t1).toFixed(2); }
+    pushGross();
+  };
+  $('grossMode').onchange = () => { if (+$('grossAmount').value <= 0) $('grossAmount').value = 1; markGross(); };
+  for (const id of ['grossDiv', 'grossChunk', 'grossFill']) $(id).onchange = () => markGross();
+  for (const id of ['grossAmount', 'grossSlice', 'grossDecay', 'grossVar', 'grossFrames', 'grossRepeats', 'grossBuild', 'grossProb']) {
+    $(id).oninput = () => markGross(); $(id).onchange = () => markGross();
+  }
+  $('grossRand').onclick = () => { S.grossSeed = (S.grossSeed + 1) | 0; S.grossPat = randomPattern(S.grossSeed, .5); markGross(); };
+  $('grossIn').onchange = () => setGrossEdge('in');
+  $('grossOut').onchange = () => setGrossEdge('out');
+  showGross();
+}
+function setGrossEnabled(on) { $('gross').querySelectorAll('input, select, button').forEach(el => { el.disabled = !on; }); }
 function snapStart(t) {
   if (!$('snapBar').checked || !S.A || S.keep) return t;
   let best = t, bd = 1e9; for (const b of S.A.bars) { const d = Math.abs(b.t - t); if (d < bd) { bd = d; best = b.t; } } return best;
@@ -219,11 +345,11 @@ function replan() {
   if (S.video) $('durTxt').textContent = S.video.dur.toFixed(2) + 's';
   if (!S.video || !S.grid) return;
   S.plan = makePlan(S.grid, S.video.dur, S.video, opts());
-  bindFx(S.plan);
+  bindFx(S.plan); attachGross(S.plan);
   document.body.dataset.ready = '1';
   $('planTxt').textContent = describePlan(S.plan);
   const [W, H] = previewSize(); R.setSize(W, H); R.setData(S.video, S.plan, fps());
-  showScene(); drawBeats();
+  showScene(); showGross(); drawBeats();
   drawFrame(+$('scrub').value * S.video.dur);
 }
 let drawing = false, pending = null;
@@ -310,6 +436,7 @@ function setButtons() {
     const ready = !!(S.A && S.songBuf), on = S.liveOn, busy = !!S.busy;
     $('bAnalyze').textContent = on ? 'Stop' : 'Go live'; $('bAnalyze').disabled = !ready || busy;
     $('bAnalyze').classList.toggle('accent', ready && !on); $('bExport').classList.remove('accent'); $('bExport').disabled = true;
+    setGrossEnabled(!busy);
     $('bAuto').disabled = true; $('bPlay').disabled = !on || busy; $('bFxReset').disabled = !ready || busy; $('bReroll').disabled = !ready || busy;
     for (const id of ['scene', 'seed', 'aspect', 'size', 'palette', 'intensity', 'strobe', 'start', 'snapBar', 'bitrate', 'quality']) $(id).disabled = busy;
     $('scrub').disabled = busy || !ready; $('fps').disabled = true;                 // live always runs at 30 fps
@@ -321,6 +448,7 @@ function setButtons() {
   for (const id of ['scene', 'seed', 'fps', 'aspect', 'size', 'palette', 'intensity', 'strobe', 'start', 'scrub', 'snapBar', 'bitrate', 'quality', 'camSel', 'srcVideo', 'srcCam', 'fAudio']) $(id).disabled = !!S.busy;
   $('bAnalyze').classList.toggle('accent', !S.plan);
   $('bExport').classList.toggle('accent', !!S.plan);
+  setGrossEnabled(!S.busy);
 }
 function bindFileName(id, empty) {
   const input = $(id), name = input.parentElement.querySelector('.file-name');
@@ -346,9 +474,9 @@ const camVideo = () => ({live: true, fps: 30, step: 1, n: 0, dur: S.A ? S.A.dura
 function camPlan() {
   if (!S.A || S.liveOn) return;
   S.video = camVideo(); S.start = 0;
-  S.plan = livePlan(S.A, S.video, opts()); bindFx(S.plan); document.body.dataset.ready = '1';      // the timeline picks where to go live
+  S.plan = livePlan(S.A, S.video, opts()); bindFx(S.plan); attachGross(S.plan); document.body.dataset.ready = '1';      // the timeline picks where to go live
   $('planTxt').textContent = describePlan(S.plan); $('durTxt').textContent = S.A.duration.toFixed(2) + 's';
-  showOut(); showScene(); drawWave(); drawBeats(); setButtons();
+  showOut(); showScene(); showGross(); drawWave(); drawBeats(); setButtons();
 }
 async function prepareSong() {
   const f = $('fAudio').files[0] || S.audioFile; if (!f) return;
@@ -386,9 +514,9 @@ async function goLive() {
     if (mode === 'luma') log('live: no person detection here, the dots use brightness depth');
     stop(); const [W, H] = liveSize(); R.setSize(W, H);
     const at = clamp(+$('scrub').value) * S.A.duration;
-    S.plan = await live.start({songBuf: S.songBuf, A: S.A, opts: opts(), fx: S.fx, at}); bindFx(S.plan);
+    S.plan = await live.start({songBuf: S.songBuf, A: S.A, opts: opts(), fx: S.fx, at}); bindFx(S.plan); attachGross(S.plan);
     S.liveOn = true; document.body.dataset.ready = '1'; document.body.dataset.live = '1';
-    showOut(); showScene(); $('planTxt').textContent = describePlan(S.plan);
+    showOut(); showScene(); showGross(); $('planTxt').textContent = describePlan(S.plan);
     log(`live at ${W}x${H} from ${at.toFixed(1)}s: ${S.plan.runs.length} plates sections over ${S.A.duration.toFixed(0)}s`);
   } catch (e) { S.liveOn = false; log('ERROR live ' + e.message); console.error(e); }
   finally { S.busy = false; setButtons(); if (S.liveOn) $('bPlay').focus(); }       // Space now plays / pauses
@@ -397,7 +525,7 @@ async function stopLive() { await live.stop(); $('bAnalyze').focus(); }
 /** settings changed while live: a new plan in place (the ring, camera and song position carry over) */
 function liveReplan(full) {
   const [W, H] = liveSize(); R.setSize(W, H);
-  const p = live.replan(opts(), S.fx); if (!p) return; S.plan = p; bindFx(S.plan);
+  const p = live.replan(opts(), S.fx); if (!p) return; S.plan = p; bindFx(S.plan); attachGross(S.plan);
   if (full) { showOut(); showScene(); $('planTxt').textContent = describePlan(S.plan); }
   drawBeats();
 }
@@ -453,13 +581,33 @@ beats.addEventListener('pointerdown', e => {
   const p = fxPoint(beats, e);
   if (p.y < 14 && document.body.dataset.ready && S.video) { e.preventDefault(); scrubTo(p.x / p.W); return; }     // the time ruler seeks (fade keys sit below it)
   const i = S.fx && S.plan ? fxHit(beats, p.x, p.y) : -1;
-  if (i < 0) return;
+  if (i < 0) {
+    const edge = grossHit(beats, p.x, p.y);
+    if (!edge) return;
+    const gr = S.plan.gross, dur = S.video.dur || .001;
+    S.grossDrag = {kind: edge, t0: gr.t0 || 0, t1: gr.t1 == null ? dur : gr.t1, x: p.x, dur};
+    beats.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    return;
+  }
   S.fxSel = i; S.fxDrag = S.fx[i];
   beats.setPointerCapture(e.pointerId);
   e.preventDefault();
   drawBeats();
 });
 beats.addEventListener('pointermove', e => {
+  if (S.grossDrag && S.video) {
+    const p = fxPoint(beats, e), d = S.grossDrag, dur = d.dur, dt = (p.x - d.x) / p.W * dur;
+    let t0 = d.t0, t1 = d.t1;
+    if (d.kind === 'in') t0 = nearestMark(d.t0 + dt, dur);
+    else if (d.kind === 'out') t1 = nearestMark(d.t1 + dt, dur);
+    else { const len = Math.max(.05, d.t1 - d.t0); t0 = nearestMark(d.t0 + dt, dur); t1 = Math.min(dur, t0 + len); if (t1 >= dur - 1e-6) { t1 = dur; t0 = Math.max(0, dur - len); } }
+    if (t1 < t0 + .05) return;
+    S.grossRegion = true; $('grossIn').value = t0.toFixed(2); $('grossOut').value = t1.toFixed(2);
+    if (!S.grossWriting && $('grossPreset').value !== 'custom') $('grossPreset').value = 'custom';
+    pushGross();
+    return;
+  }
   if (!S.fxDrag || !S.video) return;
   const p = fxPoint(beats, e), dur = S.video.dur || .001, span = p.bot - p.top;
   const key = S.fxDrag, idx = S.fx.indexOf(key);
@@ -473,8 +621,8 @@ beats.addEventListener('pointermove', e => {
   applyFx(true);
 });
 function endFxDrag(e) {
-  if (!S.fxDrag) return;
-  S.fxDrag = null;
+  if (!S.fxDrag && !S.grossDrag) return;
+  S.fxDrag = null; S.grossDrag = null;
   try { beats.releasePointerCapture(e.pointerId); } catch (err) {}
   drawBeats();
 }
@@ -530,6 +678,7 @@ function showPalette() { $('paletteHint').textContent = paletteNotes[$('palette'
 $('palette').onchange = () => { showPalette(); replan(); };
 for (const [id, txt] of [['intensity', 'intTxt'], ['strobe', 'strTxt']]) { $(id).oninput = () => { $(txt).textContent = (+$(id).value).toFixed(2); if (S.src === 'cam' && S.liveOn) liveReplanSoon(); }; $(id).onchange = replan; }
 window.addEventListener('resize', drawWave);
+bindGross();
 
 // automation hooks (used by the headless test; harmless otherwise)
 S.api = {analyze, doExport, replan, autoPick, setStart, setButtons, setSource, prepareSong, goLive, stopLive, scrubTo, set: (id, v) => { $(id).value = v; if (id === 'keepAudio') $(id).checked = !!v; },

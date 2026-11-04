@@ -130,6 +130,99 @@
         <span class="hint" id="paletteHint">red, cream, gold, blue</span>
       </label>
     </section>
+    <section class="gross" id="gross" data-mode="stutter" data-chunk="beat" aria-label="Gross">
+      <h2>Gross</h2>
+      <label class="field">
+        <span class="k">Preset</span>
+        <select id="grossPreset">
+          <option value="off" selected>off</option>
+          <option value="hyperpop">Hyperpop stutter</option>
+          <option value="gate">Gate 16ths</option>
+          <option value="repeat">Repeat build</option>
+          <option value="custom">custom</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="k">Mode</span>
+        <select id="grossMode">
+          <option value="stutter" selected>stutter</option>
+          <option value="repeat">repeat</option>
+          <option value="gate">gate</option>
+        </select>
+      </label>
+      <label class="field g-div">
+        <span class="k">Division</span>
+        <select id="grossDiv">
+          <option value="1/4">1/4</option>
+          <option value="1/8">1/8</option>
+          <option value="1/16" selected>1/16</option>
+          <option value="triplet">triplet</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="k">Amount <b id="grossAmtTxt">0.00</b></span>
+        <input type="range" id="grossAmount" min="0" max="1" step="0.05" value="0">
+      </label>
+      <label class="field g-stutter">
+        <span class="k">Slice <b id="grossSliceTxt">0.35</b></span>
+        <input type="range" id="grossSlice" min="0.05" max="1" step="0.01" value="0.35">
+      </label>
+      <label class="field g-stutter">
+        <span class="k">Decay <b id="grossDecayTxt">0.50</b></span>
+        <input type="range" id="grossDecay" min="0" max="1" step="0.01" value="0.5">
+      </label>
+      <label class="field g-stutter">
+        <span class="k">Variation <b id="grossVarTxt">0.25</b></span>
+        <input type="range" id="grossVar" min="0" max="1" step="0.05" value="0.25">
+      </label>
+      <label class="field g-repeat">
+        <span class="k">Chunk</span>
+        <select id="grossChunk">
+          <option value="beat" selected>one beat</option>
+          <option value="frames">last frames</option>
+        </select>
+      </label>
+      <label class="field g-repeat g-frames">
+        <span class="k">Frames <b id="grossFramesTxt">4</b></span>
+        <input type="range" id="grossFrames" min="1" max="12" step="1" value="4">
+      </label>
+      <label class="field g-repeat">
+        <span class="k">Repeats <b id="grossRepeatsTxt">4</b></span>
+        <input type="range" id="grossRepeats" min="1" max="8" step="1" value="4">
+      </label>
+      <label class="field g-repeat">
+        <span class="k">Build <b id="grossBuildTxt">0.00</b></span>
+        <input type="range" id="grossBuild" min="0" max="1" step="0.05" value="0">
+      </label>
+      <label class="field g-gate">
+        <span class="k">Cut</span>
+        <select id="grossFill">
+          <option value="black" selected>black</option>
+          <option value="white">white flash</option>
+          <option value="freeze">freeze</option>
+        </select>
+      </label>
+      <label class="field g-gate">
+        <span class="k">Probability <b id="grossProbTxt">1.00</b></span>
+        <input type="range" id="grossProb" min="0" max="1" step="0.05" value="1">
+      </label>
+      <div class="field g-gate">
+        <span class="k">Steps</span>
+        <div id="grossSteps" role="group" aria-label="Gate steps"></div>
+      </div>
+      <button type="button" id="grossRand" class="g-gate">Randomize</button>
+      <div class="pair">
+        <label class="field">
+          <span class="k">In</span>
+          <input type="number" id="grossIn" min="0" step="0.01" value="0" aria-label="Gross in">
+        </label>
+        <label class="field">
+          <span class="k">Out</span>
+          <input type="number" id="grossOut" min="0" step="0.01" placeholder="end" aria-label="Gross out">
+        </label>
+      </div>
+      <span class="hint" id="grossHint">Retriggers a slice on each division. In and out mark the region. The fade lane ducks it.</span>
+    </section>
     <section class="out" aria-label="Output">
       <h2>Output</h2>
       <label class="field">

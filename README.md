@@ -43,6 +43,14 @@ The first run downloads the models and libraries from public CDNs (needs interne
 
    *Punch* scales camera hits, shake, recoil and flash strength. *Strobe amount* controls how many 1-frame raw/colour
    strobes (blackouts on the stage) there are. *Palette* changes the colour family.
+
+   **Gross** is one beat-locked effect on the clip: stutter, repeat, or gate, in the style of a hyperpop edit.
+   Presets are *Hyperpop stutter*, *Gate 16ths*, and *Repeat build*. Division is the grid (1/4, 1/8, 1/16, triplet).
+   *Slice*, *decay*, and *variation* shape the stutter. Repeat loops the downbeat (or the last few frames) and then
+   lets the picture run; *Build* grows the loop count from the start of the region to the end. Gate cuts the empty
+   steps of a 16-step pattern to black, a white flash, or a freeze; *Randomize* rerolls that pattern.
+   *In* and *out* (or the edges on the beat lane) limit it to a region of the clip. The fade lane ducks it, so the
+   same keys automate it. Preview and the MP4 export both run through the effect.
 5. **Output**: aspect (source, 9:16 TikTok/Reels crop that follows the person, 1:1, 16:9), size (540/720/1080p),
    quality (bitrate), fps 30/60. Press **Play** to preview with audio, or drag the scrub bar.
 6. **Render & export MP4**: an offline, frame-accurate render (it isn't a screen capture, so slow machines don't drop frames).
@@ -110,6 +118,7 @@ and the playhead move. So any point of the song can be tried on the live dancer.
 | Clean-up | 3-frame temporal agreement, removes "pillar" false positives (top-touching, full-height, far components), centroid pivot + depth smoothing, frame-diff motion |
 | Plates stage plan | `planner.js` + `pose.js`: picks runs of bars (about 40%) for the stage and spawns pose ghosts on strong beats and pose-change onsets, snapped to the 1/8 grid with a novelty gate. Each ghost gets a material (red gloss/glass, white, graphite, teal stone), a ring slot and a lifetime (cap 14, at least 8 kept). The ring's orbit integrates faster while the dancer is still. Each plates bar gets a camera shot (orbit, ground skim, top-down, push-in, side track, laser rake). Plates are cut from the person mask at a fixed 8.5 cm pitch |
 | Planner | `planner.js`: seeded. Per-bar roles (`drop`, `half`, `quarter`, `spark`, `accel`, `freeze`, `echo`, `end`) → look schedule at varying rates, 1-frame strobes, downbeat flashes, detonations, echo hits, holds → slam, freeze-orbit, fly-through, scatter/re-form, camera swings, per-bar camera snaps |
+| Gross | `gross.js`: stutter, repeat, and gate locked to the beat grid. The renderer remaps the source frame; a black or white gate is a composite cut. Preview and export share that path |
 | Renderer | `renderer.js` + `shaders.js`: WebGL2 point cloud (each dot is a source pixel lifted by depth). Figure shells and depth layers, always-moving camera (kick dolly/whip alternating, bar snaps, drop orbit, fly-through, freeze orbit), shockwave rings, detonations with recoil, scatter + re-form, DOF, fog, bloom, chromatic split, shake, motion trails. Looks: LED source-colour dots, macro LED, ink-on-cream, gold-on-black, flat colour dots, inverted dots, glowing sparkle cloud, rainbow echo, raw strobe. No magenta |
 | Stage renderer | `stage.js`: HDR (RGBA16F, 4x MSAA on GPUs) synthetic stage. Planar-reflection floor with a white/red grid and arcs, height fog, spot cones and pools, red laser fans and cages, light pillars, a hoop at the dancer, instanced superellipse plates (print-in, glide, spin, collapse), and the live dancer as dense source-colour dots via the point shader. Then bloom, tonemap, camera motion blur and the shared composite (flash, shake, fade lane). Falls back to a dots look if WebGL can't run it |
 | Live webcam | `live.js`: camera frames via `requestVideoFrameCallback` → PoseLandmarker (VIDEO mode) mask + landmarks → hybrid depth (mask distance-field relief, landmark limb z, size-based distance, luma detail), per-frame pose stats and fit, a 16-slot GPU frame pool on camera time, and a director that spawns ghosts on the 1/8 grid of song time and integrates the orbit. Play / pause / seek move the song; a seek re-performs from there; a settings change re-plans in place and keeps the ring |
@@ -143,6 +152,7 @@ src/app.js        UI wiring, preview/playback, pipeline orchestration (window.do
 src/audio.js      decode, tempo/beat/bar/drop analysis, section pick, final mix
 src/video.js      frame extraction, depth, segmentation, mask clean-up, pivots, cache
 src/planner.js    seeded edit planner + palettes
+src/gross.js      beat-locked stutter, repeat, and gate
 src/renderer.js   WebGL2 dot/point-cloud renderer, camera, looks (and the plates stage branch)
 src/stage.js      plates stage: HDR scene, rig, camera shots, ghosts, dancer
 src/pose.js       pose stats, source -> stage mapping, movement envelope, plate geometry
@@ -159,6 +169,7 @@ test/             headless end-to-end test (Playwright + Chrome)
 
 ```bash
 node --test test/plan_test.mjs        # planner: dots edit unchanged, determinism, plates runs, ghosts, orbit
+node --test test/gross_test.mjs       # gross: stutter, repeat, gate, presets, region, fade lane
 node test/plates_e2e.mjs              # renders through the real renderer in headless Chromium (SwiftShader):
                                       # dots baseline hashes, scrub determinism, GL state, stage frames -> test/out/
 SCENE=plates FULL=1 node test/plates_e2e.mjs   # also writes MP4s to test/out/ (needs ffmpeg)
