@@ -2,6 +2,7 @@
 import { VS, FS, QV, BRIGHT, BLUR, COMP, COMP_HDR } from './shaders.js';
 import { Stage, STAGE_PTS } from './stage.js';
 import { effectAt } from './planner.js';
+import { grossAt as sampleGross } from './gross.js';
 import { clamp, easeOut, easeIO, hex, hsh, DEG, FOV0, D0, add, sub, scl, dot, lookAt, persp, mm, rotY, rotX, rotAxis, elastic, snap } from './util.js';
 
 export const LOOKS = {
@@ -89,6 +90,18 @@ export class DotRenderer {
     return ev;
   }
   stageOn(n) { const L = LOOKS[this.evAt(n).look]; return !!(L && L.st && this.stage.ok && this.stage.need && this.stage.W && effectAt(this.plan.fx, n / this.fps) >= .01); }
+  /** Gross at output frame n. Idle (no settings, amount 0) leaves the frame alone. */
+  grossNow(n) {
+    const plan = this.plan, t = n / this.fps;
+    const fx = plan ? effectAt(plan.fx, t) : 1, fps = this.V && this.V.fps ? this.V.fps : this.fps;
+    return sampleGross(plan, t, plan && plan.gross, fx, fps);
+  }
+  /** Black / white gate replaces the edit flash. Strength is the amount; the composite ducks it with the fade lane. */
+  composeFlash(n, fl, fx, stage = false) {
+    const gr = this.grossNow(n);
+    if (gr.gate === 'black' || gr.gate === 'white') return {s: gr.mix, c: gr.gate === 'black' ? [0, 0, 0] : [1, 1, 1], gr};
+    return {s: fl ? fl.s * fx * (stage ? .6 : 1) : 0, c: fl ? fl.c : [1, 1, 1], gr};
+  }
   /** beat state at frame n (same formulas as camAt) */
   beatAt(n) {
     const kb = this.lastIdx(this.beatF, n + 1e-6), ka = kb >= 0 ? (n - this.beatF[kb]) / this.fps : 9;
@@ -98,8 +111,11 @@ export class DotRenderer {
   footageF(n) {
     const V = this.V, fz = this.fz;
     if (V.live) return this.liveSrc(n);
+    // The edit's own freeze and holds win. Gross remaps the picture only outside them.
     if (fz && n >= fz.f0 && n < fz.f1) return Math.min(V.n - 1, fz.frame);
     for (const h of this.holds) if (n >= h.f0 && n < h.f1) return Math.min(V.n - 1, Math.floor(h.f0 / this.fps * V.fps));
+    const gr = this.grossNow(n);
+    if (gr.remap) return clamp(Math.floor(gr.src * V.fps + 1e-6), 0, V.n - 1);
     return clamp(Math.floor(n / this.fps * V.fps), 0, V.n - 1);
   }
   crop(fi) {      // source-uv crop rect for the output aspect; follows the figure horizontally (e.g. 9:16 from landscape)
@@ -166,13 +182,25 @@ export class DotRenderer {
   liveSrc(n) {
     const top = this.V.n - 1; if (top < 0) return -1;
     const w = this.liveWin(n), p = w && this.livePins.get(w); if (p) return Math.min(top, p.ci);
-    return clamp(top - Math.round(this.liveN - n), 0, top);
+    const gr = this.grossNow(n);
+    if (gr.hold) { const pin = this.livePins.get('gross'); if (pin && pin.id === gr.holdId) return Math.min(top, pin.ci); }
+    const srcN = gr.remap ? Math.round(gr.src * this.fps) : n;
+    return clamp(top - Math.round(this.liveN - srcN), 0, top);
   }
   /** start of a live frame: pin the snapshot of a freeze / hold window the song is in, release the others */
   liveTick(n) {
-    this.liveN = n; const w = this.liveWin(n);
-    for (const [k, p] of this.livePins) if (k !== w) { p.slot.pinned = false; this.livePins.delete(k); }
+    this.liveN = n; const w = this.liveWin(n), gr = this.grossNow(n);
+    for (const [k, p] of [...this.livePins]) {
+      if (k === w) continue;
+      if (k === 'gross' && gr.hold && p.id === gr.holdId) continue;
+      p.slot.pinned = false; this.livePins.delete(k);
+    }
     if (w && !this.livePins.has(w)) { const ci = this.V.n - 1, s = this.liveFrame(ci); if (s) { s.pinned = true; this.livePins.set(w, {ci, slot: s}); } }
+    if (gr.hold && !this.livePins.has('gross')) {
+      const top = this.V.n - 1, srcN = Math.round(gr.src * this.fps);
+      const ci = clamp(top - Math.round(this.liveN - srcN), 0, Math.max(0, top)), s = this.liveFrame(ci);
+      if (s) { s.pinned = true; this.livePins.set('gross', {ci: s.fi, slot: s, id: gr.holdId}); }
+    }
   }
   releaseLivePins() { for (const p of this.livePins.values()) p.slot.pinned = false; this.livePins.clear(); }
   livePinned() { return new Set([...this.livePins.values()].map(p => p.ci)); }
@@ -276,9 +304,10 @@ export class DotRenderer {
     gl.uniform2f(C.U('uShake'), shk * (hsh(kbs * 3.1) - .5) * 2 / W, shk * (hsh(kbs * 5.7) - .5) * 2 / H);
     gl.uniform1f(C.U('uCA'), ((cam.isBar ? 22 : 12) * kick + (14 * recoil + Math.min(10, spd * .25)) * g) * W / 1440); gl.uniform1f(C.U('uCon'), 1 + (L.full ? .2 : .35) * kick);
     gl.uniform1f(C.U('uBloom'), (bgl > .4 ? .2 : L.full ? .35 : .6) * (1 + .6 * kick));
-    gl.uniform1f(C.U('uFlash'), fl ? fl.s * g : 0); gl.uniform3fv(C.U('uFlashCol'), fl ? fl.c : [1, 1, 1]);
+    const flash = this.composeFlash(n, fl, g);
+    gl.uniform1f(C.U('uFlash'), flash.s); gl.uniform3fv(C.U('uFlashCol'), flash.c);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
-    return {n, fi, look: ev.look, kick: +kick.toFixed(2), det: +det.toFixed(2), spd: +spd.toFixed(1), freeze: !!fz, held};
+    return {n, fi, look: ev.look, kick: +kick.toFixed(2), det: +det.toFixed(2), spd: +spd.toFixed(1), freeze: !!fz, held, gross: flash.gr.gate || (flash.gr.remap ? 'lock' : '')};
   }
   /** plates stage frame: stage.js draws the HDR scene, then the stage composite (bloom, tonemap, CA, flash, fade lane). */
   async renderStage(n, ev, L, g) {
@@ -309,9 +338,10 @@ export class DotRenderer {
     gl.uniform1f(U('uCA'), .5 * ((b.isBar ? 22 : 12) * kick + (14 * recoil + Math.min(10, spd * .25)) * g) * W / 1440);
     gl.uniform1f(U('uCon'), 1.1 + .2 * kick + (st.con || 0)); gl.uniform1f(U('uBloom'), .55 * (1 + .6 * kick) * (st.bloom ?? 1));
     gl.uniform1f(U('uExp'), st.exp ?? 1); gl.uniform1f(U('uTone'), S.hdr ? 1 : 0); gl.uniform1f(U('uN'), n);
-    gl.uniform1f(U('uFlash'), fl ? fl.s * g * .6 : 0); gl.uniform3fv(U('uFlashCol'), fl ? fl.c : [1, 1, 1]);
+    const flash = this.composeFlash(n, fl, g, true);
+    gl.uniform1f(U('uFlash'), flash.s); gl.uniform3fv(U('uFlashCol'), flash.c);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.activeTexture(gl.TEXTURE0);
-    return {n, fi, look: ev.look, kick: +kick.toFixed(2), det: 0, spd: +spd.toFixed(1), freeze: false, held, stage: true, cut, dancerPts: S.dancerPts, ...info};
+    return {n, fi, look: ev.look, kick: +kick.toFixed(2), det: 0, spd: +spd.toFixed(1), freeze: false, held, stage: true, cut, dancerPts: S.dancerPts, ...info, gross: flash.gr.gate || (flash.gr.remap ? 'lock' : '')};
   }
 }
